@@ -1,0 +1,13 @@
+[package]
+name = "hft-logging"
+version = "0.1.0"
+edition = "2021"
+description = "Persistence and logging of trades and key events"
+
+[dependencies]
+hft-core = { path = "../hft-core" }
+tokio = { version = "1", features = ["sync", "fs"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+tracing = "0.1"

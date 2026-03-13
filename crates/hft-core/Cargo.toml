@@ -1,0 +1,11 @@
+[package]
+name = "hft-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared types, events, and errors for the HFT trading system"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1.33", features = ["serde"] }

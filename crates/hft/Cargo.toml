@@ -1,0 +1,25 @@
+[package]
+name = "hft"
+version = "0.1.0"
+edition = "2021"
+description = "High-frequency crypto trading system - main binary"
+
+[[bin]]
+name = "hft"
+path = "src/main.rs"
+
+[dependencies]
+hft-core = { path = "../hft-core" }
+hft-order-book = { path = "../hft-order-book" }
+hft-exchange = { path = "../hft-exchange" }
+hft-feed-handler = { path = "../hft-feed-handler" }
+hft-strategy = { path = "../hft-strategy" }
+hft-risk = { path = "../hft-risk" }
+hft-execution = { path = "../hft-execution" }
+hft-metrics = { path = "../hft-metrics" }
+hft-logging = { path = "../hft-logging" }
+hft-backtesting = { path = "../hft-backtesting" }
+hft-ui = { path = "../hft-ui" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

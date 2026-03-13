@@ -1,0 +1,12 @@
+[package]
+name = "hft-strategy"
+version = "0.1.0"
+edition = "2021"
+description = "Strategy engine: consume market data and emit trade signals"
+
+[dependencies]
+hft-core = { path = "../hft-core" }
+hft-order-book = { path = "../hft-order-book" }
+hft-feed-handler = { path = "../hft-feed-handler" }
+tokio = { version = "1", features = ["sync", "time", "rt-multi-thread"] }
+tracing = "0.1"

@@ -1,0 +1,9 @@
+[package]
+name = "hft-metrics"
+version = "0.1.0"
+edition = "2021"
+description = "Latency and throughput metrics for the trading system"
+
+[dependencies]
+hft-core = { path = "../hft-core" }
+parking_lot = "0.12"

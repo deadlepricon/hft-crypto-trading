@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hft-core",
+    "crates/hft-order-book",
+    "crates/hft-exchange",
+    "crates/hft-feed-handler",
+    "crates/hft-strategy",
+    "crates/hft-risk",
+    "crates/hft-execution",
+    "crates/hft-metrics",
+    "crates/hft-logging",
+    "crates/hft-backtesting",
+    "crates/hft-ui",
+    "crates/hft",
+]

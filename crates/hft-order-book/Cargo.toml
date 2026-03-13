@@ -1,0 +1,10 @@
+[package]
+name = "hft-order-book"
+version = "0.1.0"
+edition = "2021"
+description = "In-memory order book for high-frequency trading"
+
+[dependencies]
+hft-core = { path = "../hft-core" }
+rust_decimal = { version = "1.33", features = ["serde"] }
+parking_lot = "0.12"

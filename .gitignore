@@ -1,0 +1,18 @@
+# Rust
+/target/
+**/*.rs.bk
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets (don’t commit keys)
+.env
+.env.local
+*.pem

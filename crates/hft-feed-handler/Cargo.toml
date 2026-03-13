@@ -1,0 +1,13 @@
+[package]
+name = "hft-feed-handler"
+version = "0.1.0"
+edition = "2021"
+description = "Market data feed handler: ingest and normalize exchange streams"
+
+[dependencies]
+hft-core = { path = "../hft-core" }
+hft-order-book = { path = "../hft-order-book" }
+hft-exchange = { path = "../hft-exchange" }
+tokio = { version = "1", features = ["sync", "time", "rt-multi-thread"] }
+chrono = "0.4"
+tracing = "0.1"

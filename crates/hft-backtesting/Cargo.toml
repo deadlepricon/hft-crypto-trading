@@ -1,0 +1,13 @@
+[package]
+name = "hft-backtesting"
+version = "0.1.0"
+edition = "2021"
+description = "Backtesting: replay historical market data and evaluate strategies"
+
+[dependencies]
+hft-core = { path = "../hft-core" }
+hft-order-book = { path = "../hft-order-book" }
+hft-feed-handler = { path = "../hft-feed-handler" }
+hft-strategy = { path = "../hft-strategy" }
+tokio = { version = "1", features = ["sync", "time", "rt-multi-thread"] }
+tracing = "0.1"

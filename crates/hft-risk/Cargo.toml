@@ -1,0 +1,12 @@
+[package]
+name = "hft-risk"
+version = "0.1.0"
+edition = "2021"
+description = "Risk management: position limits, exposure, order validation"
+
+[dependencies]
+hft-core = { path = "../hft-core" }
+hft-strategy = { path = "../hft-strategy" }
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+parking_lot = "0.12"

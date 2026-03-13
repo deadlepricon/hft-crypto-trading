@@ -1,0 +1,12 @@
+[package]
+name = "hft-execution"
+version = "0.1.0"
+edition = "2021"
+description = "Execution engine: convert orders to exchange requests, track lifecycle and fills"
+
+[dependencies]
+hft-core = { path = "../hft-core" }
+hft-exchange = { path = "../hft-exchange" }
+hft-risk = { path = "../hft-risk" }
+tokio = { version = "1", features = ["sync", "time", "rt-multi-thread"] }
+tracing = "0.1"
