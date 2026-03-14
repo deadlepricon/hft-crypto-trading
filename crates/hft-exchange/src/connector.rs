@@ -25,6 +25,8 @@ pub enum ExchangeMessage {
     /// Connection or stream state.
     Connected,
     Disconnected { reason: String },
+    /// Debug line (e.g. trade parse failure) for UI/logs.
+    Debug(String),
 }
 
 /// Trait implemented by each exchange (Binance, etc.).

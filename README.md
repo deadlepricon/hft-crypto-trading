@@ -48,6 +48,8 @@ The same binary and pipeline run for both the **local simulator** and **live** e
 2. Run: `cargo run --release -p hft` (or set `EXCHANGE=simulator`).
 3. Symbol is `BTC/USDT` by default (override with `SYMBOL`).
 
+Simulator data: **book** = synthetic (for local matching); **trades** = mostly live from Binance + your fills (Binance timestamps are ms epoch string; simulator fills may have `null`); **ticker** = from Binance last trade (we parse book + trades; ticker can be added if needed).
+
 Optional env overrides for the simulator:
 - `SIMULATOR_BASE_URL` — REST base (default: `http://localhost:8765`)
 - `SIMULATOR_WS_URL` — WebSocket URL (default: `ws://localhost:8765/ws/feed`)

@@ -20,6 +20,8 @@ pub struct Metrics {
     pub orders_submitted: AtomicU64,
     /// Number of fills received.
     pub fills: AtomicU64,
+    /// Number of trade events received from the feed (for debugging).
+    pub trades_received: AtomicU64,
     /// Last feed-to-processing latency in microseconds (stub: set by feed handler).
     pub latency_feed_us: AtomicU64,
 }
@@ -53,6 +55,10 @@ impl Metrics {
         self.fills.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_trades(&self) {
+        self.trades_received.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn set_latency_feed_us(&self, us: u64) {
         self.latency_feed_us.store(us, Ordering::Relaxed);
     }
@@ -63,5 +69,13 @@ impl Metrics {
 
     pub fn latency_feed_us(&self) -> u64 {
         self.latency_feed_us.load(Ordering::Relaxed)
+    }
+
+    pub fn trades_received(&self) -> u64 {
+        self.trades_received.load(Ordering::Relaxed)
+    }
+
+    pub fn fills(&self) -> u64 {
+        self.fills.load(Ordering::Relaxed)
     }
 }

@@ -6,4 +6,4 @@
 
 mod manager;
 
-pub use manager::RiskManager;
+pub use manager::{RiskLimits, RiskManager};

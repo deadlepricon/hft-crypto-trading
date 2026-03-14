@@ -11,6 +11,10 @@ members = [
     "crates/hft-metrics",
     "crates/hft-logging",
     "crates/hft-backtesting",
+    "crates/hft-data-recorder",
+    "crates/hft-performance-metrics",
+    "crates/hft-optimizer",
+    "crates/hft-experiment-runner",
     "crates/hft-ui",
     "crates/hft",
 ]

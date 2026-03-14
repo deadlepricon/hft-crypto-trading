@@ -1,0 +1,16 @@
+[package]
+name = "hft-optimizer"
+version = "0.1.0"
+edition = "2021"
+description = "Strategy parameter optimization: grid, random, and Bayesian search"
+
+[dependencies]
+hft-backtesting = { path = "../hft-backtesting" }
+hft-core = { path = "../hft-core" }
+hft-order-book = { path = "../hft-order-book" }
+hft-performance-metrics = { path = "../hft-performance-metrics" }
+hft-strategy = { path = "../hft-strategy" }
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = "0.1"

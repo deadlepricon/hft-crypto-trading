@@ -7,6 +7,9 @@ description = "Execution engine: convert orders to exchange requests, track life
 [dependencies]
 hft-core = { path = "../hft-core" }
 hft-exchange = { path = "../hft-exchange" }
+hft-order-book = { path = "../hft-order-book" }
 hft-risk = { path = "../hft-risk" }
+hft-strategy = { path = "../hft-strategy" }
+rust_decimal = "1.33"
 tokio = { version = "1", features = ["sync", "time", "rt-multi-thread"] }
 tracing = "0.1"

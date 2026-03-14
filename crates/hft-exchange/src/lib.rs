@@ -17,9 +17,9 @@ pub use simulator::{SimulatorConnector, SIMULATOR_BASE_URL, SIMULATOR_WS_URL};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExchangeBackend {
     /// Local simulator at http://localhost:8765, ws://localhost:8765/ws/feed
-    #[default]
     Simulator,
-    /// Live Binance (stub for now).
+    /// Live Binance WebSocket (default).
+    #[default]
     Binance,
 }
 
@@ -44,9 +44,9 @@ pub fn create_connector(
     create_connector_with_env(backend, symbol)
 }
 
-/// Like [create_connector], but reads optional env overrides for the simulator:
-/// - `SIMULATOR_BASE_URL` (default: http://localhost:8765)
-/// - `SIMULATOR_WS_URL` (default: ws://localhost:8765/ws/feed)
+/// Like [create_connector], but reads optional env overrides:
+/// - Simulator: `SIMULATOR_BASE_URL`, `SIMULATOR_WS_URL`
+/// - Binance.US: `BINANCE_WS_URL` (optional; full URL override), `BINANCE_WS_BASE` (optional; default wss://stream.binance.us:9443)
 pub fn create_connector_with_env(
     backend: ExchangeBackend,
     symbol: impl Into<String>,
@@ -58,6 +58,12 @@ pub fn create_connector_with_env(
             let ws = std::env::var("SIMULATOR_WS_URL").unwrap_or_else(|_| SIMULATOR_WS_URL.to_string());
             std::sync::Arc::new(SimulatorConnector::with_urls(symbol, base, ws))
         }
-        ExchangeBackend::Binance => std::sync::Arc::new(BinanceConnector::new(symbol)),
+        ExchangeBackend::Binance => {
+            if let Ok(url) = std::env::var("BINANCE_WS_URL") {
+                std::sync::Arc::new(BinanceConnector::with_ws_url(symbol, url))
+            } else {
+                std::sync::Arc::new(BinanceConnector::new(symbol))
+            }
+        }
     }
 }

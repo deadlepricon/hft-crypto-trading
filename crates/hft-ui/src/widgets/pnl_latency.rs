@@ -1,4 +1,4 @@
-//! PnL, win rate, cumulative P&L, and latency metrics widget.
+//! PnL, win rate, Sharpe, drawdown, profit per trade/minute, and latency metrics widget.
 
 use hft_metrics::Metrics;
 use ratatui::style::{Modifier, Style};
@@ -7,25 +7,52 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::App;
 
+/// Format PnL for display: finite and capped so we never show 2e18.
+fn fmt_pnl(x: f64) -> String {
+    if !x.is_finite() || x.abs() >= 1e9 {
+        "N/A".to_string()
+    } else {
+        format!("{:.4}", x)
+    }
+}
+
 /// Build the PnL and latency info paragraph.
 pub fn pnl_latency_widget(app: &App, metrics: &Metrics) -> Paragraph<'static> {
-    let win_rate = app.win_rate() * 100.0;
+    let win_pct = app.win_rate() * 100.0;
+    let buy_win_pct = app.buy_win_rate() * 100.0;
+    let sell_win_pct = app.sell_win_rate() * 100.0;
+    let total_trades = app.wins + app.losses;
+    let live_pnl = app.cumulative_pnl + app.unrealized_pnl;
     let lines = vec![
         Line::from(Span::styled(
-            " PnL & Metrics\n",
+            " PnL & Performance\n",
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::from(format!("  Cumulative PnL:   {:.2}", app.cumulative_pnl)),
-        Line::from(format!("  Win rate:         {:.1}%", win_rate)),
-        Line::from(format!("  Wins / Losses:    {} / {}", app.wins, app.losses)),
-        Line::from(""),
         Line::from(format!(
-            "  Feed latency:     {} µs",
+            "  Live PnL (paper):   {}  (realized: {}  unrealized: {})",
+            fmt_pnl(live_pnl),
+            fmt_pnl(app.cumulative_pnl),
+            fmt_pnl(app.unrealized_pnl)
+        )),
+        Line::from(format!("  Our fills:         {}  (round-trips: {} = closed)", app.total_fills, total_trades)),
+        Line::from(format!("  Profit per trade:  {}  (on closed only)", fmt_pnl(app.profit_per_trade()))),
+        Line::from(""),
+        Line::from(format!("  Win rate:          {:.1}%  ({}/{} closed trades)", win_pct, app.wins, total_trades)),
+        Line::from(format!("  Buy Win %:         {:.1}%  ({}/{})", buy_win_pct, app.buy_wins, app.buy_wins + app.buy_losses)),
+        Line::from(format!("  Sell Win %:        {:.1}%  ({}/{})", sell_win_pct, app.sell_wins, app.sell_wins + app.sell_losses)),
+        Line::from(""),
+        Line::from(format!("  Sharpe ratio:      {:.2}", app.sharpe_ratio())),
+        Line::from(format!("  Max drawdown:      {}", fmt_pnl(app.max_drawdown))),
+        Line::from(format!("  Profit per minute: {}", fmt_pnl(app.profit_per_minute()))),
+        Line::from(""),
+        Line::from(format!("  Trades received:   {}  (market)  Fills: {}  (our)", metrics.trades_received(), metrics.fills())),
+        Line::from(format!(
+            "  Feed latency:      {} µs",
             metrics.latency_feed_us()
         )),
-        Line::from(format!("  Feed messages:    {}", metrics.feed_messages())),
+        Line::from(format!("  Feed messages:     {}", metrics.feed_messages())),
     ];
     Paragraph::new(lines)
-        .block(Block::default().title(" PnL & Latency ").borders(Borders::ALL))
+        .block(Block::default().title(" PnL & Performance ").borders(Borders::ALL))
         .wrap(Wrap { trim: false })
 }

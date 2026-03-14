@@ -5,9 +5,12 @@ edition = "2021"
 description = "Backtesting: replay historical market data and evaluate strategies"
 
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
 hft-core = { path = "../hft-core" }
-hft-order-book = { path = "../hft-order-book" }
 hft-feed-handler = { path = "../hft-feed-handler" }
+hft-order-book = { path = "../hft-order-book" }
+hft-performance-metrics = { path = "../hft-performance-metrics" }
 hft-strategy = { path = "../hft-strategy" }
+rust_decimal = "1.33"
 tokio = { version = "1", features = ["sync", "time", "rt-multi-thread"] }
 tracing = "0.1"

@@ -6,4 +6,4 @@
 
 mod runner;
 
-pub use runner::BacktestRunner;
+pub use runner::{BacktestConfig, BacktestResult, BacktestRunner, ReplayEvent};

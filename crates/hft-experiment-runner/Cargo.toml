@@ -1,0 +1,15 @@
+[package]
+name = "hft-experiment-runner"
+version = "0.1.0"
+edition = "2021"
+description = "Run multiple strategy × parameter experiments and store results"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+hft-backtesting = { path = "../hft-backtesting" }
+hft-optimizer = { path = "../hft-optimizer" }
+hft-performance-metrics = { path = "../hft-performance-metrics" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = "0.1"

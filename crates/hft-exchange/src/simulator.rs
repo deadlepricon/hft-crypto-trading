@@ -2,8 +2,14 @@
 //!
 //! Connects to a local simulator: WebSocket at ws://localhost:8765/ws/feed
 //! for market data (book delta, trades, ticker), REST at http://localhost:8765
-//! for orders. Uses the same [ExchangeConnector] trait as live exchanges so
-//! the rest of the system runs identically.
+//! for orders.
+//!
+//! - **Book**: synthetic (simulator-generated); use for placing/matching orders locally.
+//! - **Trades**: mostly live from Binance; you also get trades when your orders fill
+//!   (simulator uses trade_id like "trd_42", timestamp may be null).
+//! - **Ticker**: from Binance last trade (last_price, volume since startup; best_bid/ask = last_price).
+//!
+//! Binance trade timestamps are **milliseconds since epoch** (string). Simulator fills may have null.
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -65,6 +71,16 @@ fn f64_to_decimal(v: f64) -> Qty {
     Decimal::from_str(&format!("{v}")).unwrap_or(Decimal::ZERO)
 }
 
+/// Parse timestamp from JSON: string "1699900123456", number, or null → Option<DateTime<Utc>>.
+fn parse_timestamp_ms(v: &Option<serde_json::Value>) -> Option<chrono::DateTime<Utc>> {
+    let ms = match v.as_ref()? {
+        serde_json::Value::String(s) => s.parse::<i64>().ok()?,
+        serde_json::Value::Number(n) => n.as_i64()?,
+        _ => return None,
+    };
+    chrono::DateTime::from_timestamp_millis(ms)
+}
+
 #[derive(serde::Deserialize)]
 struct WsEnvelope {
     channel: Option<String>,
@@ -87,15 +103,13 @@ struct BookDeltaData {
     sequence: u64,
 }
 
-#[derive(serde::Deserialize)]
-struct TradeData {
-    symbol: String,
-    trade_id: String,
-    price: f64,
-    quantity: f64,
-    side: String,
-    #[serde(default)]
-    timestamp: Option<String>,
+/// Parse f64 from JSON Value (number or string).
+fn value_to_f64(v: &serde_json::Value) -> Option<f64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
 }
 
 #[async_trait]
@@ -152,22 +166,59 @@ impl ExchangeConnector for SimulatorConnector {
                                                     }
                                                 }
                                             } else if channel == "trades" && msg_type == "trade" {
-                                                if let Ok(t) = serde_json::from_value::<TradeData>(data) {
-                                                    let side = if t.side.to_lowercase().as_str() == "buy" {
-                                                        OrderSide::Buy
-                                                    } else {
-                                                        OrderSide::Sell
-                                                    };
-                                                    let ts = t
-                                                        .timestamp
-                                                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-                                                        .map(|dt| dt.with_timezone(&Utc))
-                                                        .unwrap_or_else(Utc::now);
+                                                let data_obj = match data {
+                                                    serde_json::Value::Object(o) => o.clone(),
+                                                    _ => {
+                                                        let _ = tx.send(ExchangeMessage::Debug(
+                                                            "trade: data not an object".to_string(),
+                                                        ));
+                                                        continue;
+                                                    }
+                                                };
+                                                let symbol = data_obj
+                                                    .get("symbol")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                let trade_id = data_obj
+                                                    .get("trade_id")
+                                                    .map(|v| match v {
+                                                        serde_json::Value::String(s) => s.clone(),
+                                                        serde_json::Value::Number(n) => n.to_string(),
+                                                        _ => "?".to_string(),
+                                                    })
+                                                    .unwrap_or_else(|| "?".to_string());
+                                                let price = data_obj
+                                                    .get("price")
+                                                    .and_then(value_to_f64)
+                                                    .unwrap_or(0.0);
+                                                let quantity = data_obj
+                                                    .get("quantity")
+                                                    .and_then(value_to_f64)
+                                                    .unwrap_or(0.0);
+                                                let side_str = data_obj
+                                                    .get("side")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("sell");
+                                                let side = if side_str.to_lowercase().as_str() == "buy" {
+                                                    OrderSide::Buy
+                                                } else {
+                                                    OrderSide::Sell
+                                                };
+                                                if symbol.is_empty() || trade_id.is_empty() {
+                                                    let snippet = format!(
+                                                        "trade? keys={}",
+                                                        data_obj.keys().cloned().collect::<Vec<_>>().join(",")
+                                                    );
+                                                    let _ = tx.send(ExchangeMessage::Debug(snippet));
+                                                } else {
+                                                    let timestamp = data_obj.get("timestamp").cloned();
+                                                    let ts = parse_timestamp_ms(&timestamp).unwrap_or_else(Utc::now);
                                                     let ev = TradeEvent {
-                                                        symbol: t.symbol,
-                                                        trade_id: TradeId(t.trade_id),
-                                                        price: f64_to_decimal(t.price),
-                                                        qty: f64_to_decimal(t.quantity),
+                                                        symbol,
+                                                        trade_id: TradeId(trade_id),
+                                                        price: f64_to_decimal(price),
+                                                        qty: f64_to_decimal(quantity),
                                                         side,
                                                         timestamp: ts,
                                                     };

@@ -1,0 +1,10 @@
+[package]
+name = "hft-performance-metrics"
+version = "0.1.0"
+edition = "2021"
+description = "Trading performance metrics: PnL, Sharpe, drawdown, win rate, trade duration"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1.33", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }

@@ -8,8 +8,8 @@
 //!
 //! Approved orders are sent to the execution engine via a channel.
 
-use hft_core::{OrderRequest, Result};
-use hft_strategy::Signal;
+use hft_core::Result;
+use hft_strategy::{OrderWithStrategy, Signal};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -36,17 +36,17 @@ impl Default for RiskLimits {
     }
 }
 
-/// Risk manager: consumes signals, validates, forwards approved [OrderRequest]s.
+/// Risk manager: consumes signals, validates, forwards approved [OrderWithStrategy]s so execution can route fills.
 pub struct RiskManager {
     limits: RiskLimits,
     /// Current positions (symbol -> net qty); updated from execution layer in full impl.
     positions: RwLock<HashMap<String, i64>>,
-    approved_tx: mpsc::Sender<OrderRequest>,
+    approved_tx: mpsc::Sender<OrderWithStrategy>,
 }
 
 impl RiskManager {
-    /// Create a risk manager that sends approved orders to the given channel.
-    pub fn new(limits: RiskLimits, approved_tx: mpsc::Sender<OrderRequest>) -> Self {
+    /// Create a risk manager that sends approved orders (with strategy_id) to the given channel.
+    pub fn new(limits: RiskLimits, approved_tx: mpsc::Sender<OrderWithStrategy>) -> Self {
         Self {
             limits,
             positions: RwLock::new(HashMap::new()),
@@ -98,7 +98,10 @@ impl RiskManager {
 
         debug!(symbol = %req.symbol, "risk: approved");
         self.approved_tx
-            .send(req.clone())
+            .send(OrderWithStrategy {
+                request: req.clone(),
+                strategy_id: signal.strategy_id.clone(),
+            })
             .await
             .map_err(|e| hft_core::HftError::InvalidState(e.to_string()))?;
         Ok(())

@@ -1,113 +1,113 @@
-//! Feed handler: consume exchange messages, update order book, broadcast events.
+//! Feed handler: normalize exchange messages into FeedEvent and broadcast.
 //!
-//! Runs as a long-lived task. Receives [ExchangeMessage] from the connector,
-//! applies order book updates to [OrderBook], and sends normalized events
-//! (e.g. OrderBookSnapshot, TradeEvent) to downstream channels for the
-//! strategy engine and UI.
+//! Consumes [ExchangeMessage] from the connector, updates the shared [OrderBook],
+//! and broadcasts [EventEnvelope]<[FeedEvent]> for the strategy engine and UI.
 
 use chrono::Utc;
 use hft_core::events::{EventEnvelope, EventSource, OrderBookDelta, OrderBookSnapshot, TradeEvent};
-use hft_exchange::{ExchangeConnector, ExchangeMessage};
 use hft_order_book::OrderBook;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::debug;
 
-/// Feed handler: owns the order book and broadcasts market data events.
-pub struct FeedHandler {
-    connector: Arc<dyn ExchangeConnector>,
-    order_book: Arc<OrderBook>,
-    /// Channel to broadcast snapshots/deltas and trades to strategy and UI.
-    tx_events: broadcast::Sender<EventEnvelope<FeedEvent>>,
-}
+use hft_exchange::ExchangeMessage;
 
-/// Events emitted by the feed handler (order book or trade updates).
-#[derive(Debug, Clone)]
+/// Normalized market data event for strategies and backtester.
+/// Matches the three main callbacks: orderbook update, trade, ticker.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FeedEvent {
+    /// Full or incremental order book update (strategies: on_orderbook_update).
     OrderBookSnapshot(OrderBookSnapshot),
     OrderBookDelta(OrderBookDelta),
+    /// Public trade (strategies: on_trade).
     Trade(TradeEvent),
+    /// Ticker update e.g. last price, 24h volume (strategies: on_ticker_update).
+    Ticker(TickerUpdate),
+}
+
+/// Ticker summary (last price, volume, best bid/ask).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TickerUpdate {
+    pub symbol: String,
+    pub last_price: hft_core::Price,
+    pub volume_24h: Option<hft_core::Qty>,
+    pub best_bid: Option<hft_core::Price>,
+    pub best_ask: Option<hft_core::Price>,
+}
+
+/// Feed handler: subscribes to connector, updates order book, broadcasts FeedEvent.
+pub struct FeedHandler {
+    connector: Arc<dyn hft_exchange::ExchangeConnector>,
+    order_book: Arc<OrderBook>,
+    tx: broadcast::Sender<EventEnvelope<FeedEvent>>,
+    capacity: usize,
 }
 
 impl FeedHandler {
-    /// Create a feed handler with the given connector and order book.
-    /// Returns a broadcast sender for events (clone and give to strategy/UI).
+    /// Create a new feed handler. Returns the handler and the broadcast sender.
+    /// Call `feed_tx.subscribe()` for each consumer (e.g. UI and strategy engine).
     pub fn new(
-        connector: Arc<dyn ExchangeConnector>,
+        connector: Arc<dyn hft_exchange::ExchangeConnector>,
         order_book: Arc<OrderBook>,
-        event_capacity: usize,
-    ) -> (Self, broadcast::Receiver<EventEnvelope<FeedEvent>>) {
-        let (tx_events, rx_events) = broadcast::channel(event_capacity);
+        capacity: usize,
+    ) -> (Self, broadcast::Sender<EventEnvelope<FeedEvent>>) {
+        let (tx, _rx) = broadcast::channel(capacity);
         let handler = Self {
             connector,
             order_book,
-            tx_events,
+            tx: tx.clone(),
+            capacity,
         };
-        (handler, rx_events)
+        (handler, tx)
     }
 
-    /// Run the feed handler: subscribe to connector and process messages until disconnect.
-    pub async fn run(&self) -> hft_core::Result<()> {
+    /// Run the feed loop: subscribe to connector and for each message update book and broadcast.
+    pub async fn run(self) -> hft_core::Result<()> {
         let mut rx = self.connector.subscribe().await?;
-        info!(exchange = %self.connector.name(), "feed handler subscribed");
+        let order_book = self.order_book.clone();
+        let tx = self.tx;
 
         while let Some(msg) = rx.recv().await {
-            match msg {
+            let envelope = match msg {
                 ExchangeMessage::OrderBookSnapshot(snap) => {
-                    self.order_book.replace(snap.bids.clone(), snap.asks.clone());
-                    let envelope = EventEnvelope {
+                    order_book.replace(snap.bids.clone(), snap.asks.clone());
+                    EventEnvelope {
                         source: EventSource::FeedHandler,
                         ts: Utc::now(),
                         payload: FeedEvent::OrderBookSnapshot(snap),
-                    };
-                    let _ = self.tx_events.send(envelope);
+                    }
                 }
                 ExchangeMessage::OrderBookDelta(delta) => {
-                    let bids: Vec<_> = delta.bids.iter().map(|l| (l.price, l.qty)).collect();
-                    let asks: Vec<_> = delta.asks.iter().map(|l| (l.price, l.qty)).collect();
-                    if !bids.is_empty() {
-                        self.order_book.update_bids(&bids);
+                    let bid_tuples: Vec<_> = delta.bids.iter().map(|l| (l.price, l.qty)).collect();
+                    let ask_tuples: Vec<_> = delta.asks.iter().map(|l| (l.price, l.qty)).collect();
+                    if !bid_tuples.is_empty() {
+                        order_book.update_bids(&bid_tuples);
                     }
-                    if !asks.is_empty() {
-                        self.order_book.update_asks(&asks);
+                    if !ask_tuples.is_empty() {
+                        order_book.update_asks(&ask_tuples);
                     }
-                    let envelope = EventEnvelope {
+                    EventEnvelope {
                         source: EventSource::FeedHandler,
                         ts: Utc::now(),
                         payload: FeedEvent::OrderBookDelta(delta),
-                    };
-                    let _ = self.tx_events.send(envelope);
+                    }
                 }
-                ExchangeMessage::Trade(trade) => {
-                    let envelope = EventEnvelope {
-                        source: EventSource::FeedHandler,
-                        ts: Utc::now(),
-                        payload: FeedEvent::Trade(trade),
-                    };
-                    let _ = self.tx_events.send(envelope);
+                ExchangeMessage::Trade(trade) => EventEnvelope {
+                    source: EventSource::FeedHandler,
+                    ts: Utc::now(),
+                    payload: FeedEvent::Trade(trade),
+                },
+                ExchangeMessage::OrderEvent(_)
+                | ExchangeMessage::Fill(_)
+                | ExchangeMessage::Connected
+                | ExchangeMessage::Disconnected { .. }
+                | ExchangeMessage::Debug(_) => {
+                    debug!(?msg, "feed handler ignoring non-feed message");
+                    continue;
                 }
-                ExchangeMessage::Connected => {
-                    info!(exchange = %self.connector.name(), "connected");
-                }
-                ExchangeMessage::Disconnected { reason } => {
-                    warn!(exchange = %self.connector.name(), %reason, "disconnected");
-                }
-                ExchangeMessage::OrderEvent(_) | ExchangeMessage::Fill(_) => {
-                    // Execution path: can be forwarded to execution/UI; feed handler may ignore.
-                }
-            }
+            };
+            let _ = tx.send(envelope);
         }
-
         Ok(())
-    }
-
-    /// Clone of the event broadcast sender for wiring to strategy/UI.
-    pub fn event_sender(&self) -> broadcast::Sender<EventEnvelope<FeedEvent>> {
-        self.tx_events.clone()
-    }
-
-    /// Reference to the order book for direct snapshot access (e.g. by strategy or UI).
-    pub fn order_book(&self) -> Arc<OrderBook> {
-        Arc::clone(&self.order_book)
     }
 }

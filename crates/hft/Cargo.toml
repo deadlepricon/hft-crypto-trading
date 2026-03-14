@@ -10,16 +10,18 @@ path = "src/main.rs"
 
 [dependencies]
 hft-core = { path = "../hft-core" }
-hft-order-book = { path = "../hft-order-book" }
+hft-backtesting = { path = "../hft-backtesting" }
+hft-execution = { path = "../hft-execution" }
 hft-exchange = { path = "../hft-exchange" }
 hft-feed-handler = { path = "../hft-feed-handler" }
-hft-strategy = { path = "../hft-strategy" }
-hft-risk = { path = "../hft-risk" }
-hft-execution = { path = "../hft-execution" }
-hft-metrics = { path = "../hft-metrics" }
 hft-logging = { path = "../hft-logging" }
-hft-backtesting = { path = "../hft-backtesting" }
+hft-metrics = { path = "../hft-metrics" }
+hft-order-book = { path = "../hft-order-book" }
+hft-risk = { path = "../hft-risk" }
+hft-strategy = { path = "../hft-strategy" }
 hft-ui = { path = "../hft-ui" }
+parking_lot = "0.12"
+rust_decimal = "1.33"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

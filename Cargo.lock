@@ -601,6 +601,8 @@ dependencies = [
  "hft-risk",
  "hft-strategy",
  "hft-ui",
+ "parking_lot",
+ "rust_decimal",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -610,10 +612,13 @@ dependencies = [
 name = "hft-backtesting"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "hft-core",
  "hft-feed-handler",
  "hft-order-book",
+ "hft-performance-metrics",
  "hft-strategy",
+ "rust_decimal",
  "tokio",
  "tracing",
 ]
@@ -626,6 +631,19 @@ dependencies = [
  "rust_decimal",
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "hft-data-recorder"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hft-backtesting",
+ "hft-core",
+ "hft-feed-handler",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -651,7 +669,24 @@ version = "0.1.0"
 dependencies = [
  "hft-core",
  "hft-exchange",
+ "hft-order-book",
  "hft-risk",
+ "hft-strategy",
+ "rust_decimal",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "hft-experiment-runner"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hft-backtesting",
+ "hft-optimizer",
+ "hft-performance-metrics",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]
@@ -664,6 +699,7 @@ dependencies = [
  "hft-core",
  "hft-exchange",
  "hft-order-book",
+ "serde",
  "tokio",
  "tracing",
 ]
@@ -689,12 +725,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "hft-optimizer"
+version = "0.1.0"
+dependencies = [
+ "hft-backtesting",
+ "hft-core",
+ "hft-order-book",
+ "hft-performance-metrics",
+ "hft-strategy",
+ "rand",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "hft-order-book"
 version = "0.1.0"
 dependencies = [
  "hft-core",
  "parking_lot",
  "rust_decimal",
+]
+
+[[package]]
+name = "hft-performance-metrics"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rust_decimal",
+ "serde",
 ]
 
 [[package]]
@@ -715,6 +775,7 @@ dependencies = [
  "hft-core",
  "hft-feed-handler",
  "hft-order-book",
+ "rust_decimal",
  "tokio",
  "tracing",
 ]
@@ -725,6 +786,8 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "hft-core",
+ "hft-execution",
+ "hft-feed-handler",
  "hft-metrics",
  "hft-order-book",
  "ratatui",
