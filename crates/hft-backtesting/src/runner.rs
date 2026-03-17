@@ -12,6 +12,7 @@ use hft_order_book::OrderBook;
 use hft_performance_metrics::{PerformanceMetrics, PerformanceReport, SimulatedTrade, TradeSide};
 use hft_strategy::{Signal, Strategy};
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -46,6 +47,14 @@ impl Default for BacktestConfig {
 pub struct ReplayEvent {
     pub ts: DateTime<Utc>,
     pub event: FeedEvent,
+}
+
+/// Half of an open round-trip trade, waiting to be closed by the opposing signal.
+struct OpenPosition {
+    entry_price: Decimal,
+    qty: Decimal,
+    entry_time: DateTime<Utc>,
+    side: TradeSide,
 }
 
 /// Runner that replays historical data, runs strategies, and simulates execution.
@@ -90,6 +99,8 @@ impl BacktestRunner {
     ) -> BacktestResult {
         let (signal_tx, mut signal_rx) = mpsc::channel::<Signal>(1024);
         let mut trades: Vec<SimulatedTrade> = Vec::new();
+        // Tracks open (unmatched) positions; buys wait for a sell, shorts wait for a buy.
+        let mut open_positions: HashMap<String, OpenPosition> = HashMap::new();
         let mut last_ts = None::<DateTime<Utc>>;
         let speed = self.config.speed_multiplier;
 
@@ -117,7 +128,7 @@ impl BacktestRunner {
             last_ts = Some(replay.ts);
 
             while let Ok(signal) = signal_rx.try_recv() {
-                if let Some(sim) = self.simulate_fill(&signal, envelope.ts) {
+                if let Some(sim) = self.process_signal(&signal, envelope.ts, &mut open_positions) {
                     trades.push(sim);
                 }
             }
@@ -125,7 +136,7 @@ impl BacktestRunner {
 
         drop(signal_tx);
         while let Some(signal) = signal_rx.recv().await {
-            if let Some(sim) = self.simulate_fill(&signal, Utc::now()) {
+            if let Some(sim) = self.process_signal(&signal, Utc::now(), &mut open_positions) {
                 trades.push(sim);
             }
         }
@@ -141,28 +152,123 @@ impl BacktestRunner {
         }
     }
 
-    /// Simulate fill at current mid (or best ask for buy, best bid for sell). Returns a [SimulatedTrade] if filled.
-    fn simulate_fill(&self, signal: &Signal, fill_ts: DateTime<Utc>) -> Option<SimulatedTrade> {
+    /// Realistic fill price: buys pay the ask (cost of crossing the spread);
+    /// sells receive the bid. Falls back to mid, then the signal's own limit price.
+    fn fill_price_for_signal(&self, signal: &Signal) -> Option<Decimal> {
         let req = &signal.request;
-        let fill_price = match (self.order_book.best_bid(), self.order_book.best_ask()) {
-            (Some(b), Some(a)) => req.price.unwrap_or_else(|| (b + a) / Decimal::from(2)),
-            (Some(b), None) => req.price.unwrap_or(b),
-            (None, Some(a)) => req.price.unwrap_or(a),
-            (None, None) => return None,
-        };
-        let entry_ts = fill_ts - chrono::Duration::milliseconds(1);
-        let side = match req.side {
-            OrderSide::Buy => TradeSide::Buy,
-            OrderSide::Sell => TradeSide::Sell,
-        };
-        Some(SimulatedTrade {
-            entry_time: entry_ts,
-            exit_time: fill_ts,
-            side,
-            entry_price: fill_price,
-            exit_price: fill_price,
-            qty: req.qty,
-        })
+        match req.side {
+            OrderSide::Buy => self
+                .order_book
+                .best_ask()
+                .or_else(|| self.order_book.best_bid())
+                .or(req.price),
+            OrderSide::Sell => self
+                .order_book
+                .best_bid()
+                .or_else(|| self.order_book.best_ask())
+                .or(req.price),
+        }
+    }
+
+    /// Pair a signal against the open-position map.
+    ///
+    /// - Opening fills (no opposing position) are recorded in `open_positions` and return `None`.
+    /// - Closing fills (opposing position exists) produce a [SimulatedTrade] with real entry/exit
+    ///   prices and return `Some(trade)`.
+    fn process_signal(
+        &self,
+        signal: &Signal,
+        fill_ts: DateTime<Utc>,
+        open_positions: &mut HashMap<String, OpenPosition>,
+    ) -> Option<SimulatedTrade> {
+        let req = &signal.request;
+        let fill_price = self.fill_price_for_signal(signal)?;
+        let symbol = req.symbol.clone();
+        let qty = req.qty;
+
+        match req.side {
+            OrderSide::Buy => {
+                // If we hold a short, this buy closes (part of) it → realize PnL.
+                if let Some(pos) = open_positions.get(&symbol) {
+                    if pos.side == TradeSide::Sell {
+                        let close_qty = qty.min(pos.qty);
+                        let trade = SimulatedTrade {
+                            entry_time: pos.entry_time,
+                            exit_time: fill_ts,
+                            side: TradeSide::Sell,
+                            entry_price: pos.entry_price,
+                            exit_price: fill_price,
+                            qty: close_qty,
+                        };
+                        let remaining = pos.qty - close_qty;
+                        if remaining <= Decimal::ZERO {
+                            open_positions.remove(&symbol);
+                        } else {
+                            open_positions.get_mut(&symbol).unwrap().qty = remaining;
+                        }
+                        return Some(trade);
+                    }
+                }
+                // No opposing position: open or add to long.
+                let pos = open_positions.entry(symbol).or_insert(OpenPosition {
+                    entry_price: fill_price,
+                    qty: Decimal::ZERO,
+                    entry_time: fill_ts,
+                    side: TradeSide::Buy,
+                });
+                if pos.qty > Decimal::ZERO {
+                    // Weighted-average entry when adding to an existing long.
+                    let new_qty = pos.qty + qty;
+                    pos.entry_price =
+                        (pos.entry_price * pos.qty + fill_price * qty) / new_qty;
+                } else {
+                    pos.entry_price = fill_price;
+                    pos.entry_time = fill_ts;
+                }
+                pos.qty += qty;
+                None
+            }
+            OrderSide::Sell => {
+                // If we hold a long, this sell closes (part of) it → realize PnL.
+                if let Some(pos) = open_positions.get(&symbol) {
+                    if pos.side == TradeSide::Buy {
+                        let close_qty = qty.min(pos.qty);
+                        let trade = SimulatedTrade {
+                            entry_time: pos.entry_time,
+                            exit_time: fill_ts,
+                            side: TradeSide::Buy,
+                            entry_price: pos.entry_price,
+                            exit_price: fill_price,
+                            qty: close_qty,
+                        };
+                        let remaining = pos.qty - close_qty;
+                        if remaining <= Decimal::ZERO {
+                            open_positions.remove(&symbol);
+                        } else {
+                            open_positions.get_mut(&symbol).unwrap().qty = remaining;
+                        }
+                        return Some(trade);
+                    }
+                }
+                // No opposing position: open or add to short.
+                let pos = open_positions.entry(symbol).or_insert(OpenPosition {
+                    entry_price: fill_price,
+                    qty: Decimal::ZERO,
+                    entry_time: fill_ts,
+                    side: TradeSide::Sell,
+                });
+                if pos.qty > Decimal::ZERO {
+                    let new_qty = pos.qty + qty;
+                    pos.entry_price =
+                        (pos.entry_price * pos.qty + fill_price * qty) / new_qty;
+                } else {
+                    pos.entry_price = fill_price;
+                    pos.entry_time = fill_ts;
+                }
+                pos.qty += qty;
+                None
+            }
+        }
     }
 
     /// Run with no events (stub); returns empty result. Useful for wiring tests.

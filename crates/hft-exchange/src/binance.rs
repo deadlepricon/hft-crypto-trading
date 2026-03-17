@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use hft_core::{
     events::{OrderBookDelta, OrderBookSnapshot, TradeEvent},
     OrderRequest, OrderSide, Result, TradeId,
@@ -116,7 +116,7 @@ impl ExchangeConnector for BinanceConnector {
                 match tokio_tungstenite::connect_async(&ws_url).await {
                     Ok((ws_stream, _)) => {
                         info!(url = %ws_url, "binance ws connected");
-                        let (_write, mut read) = futures_util::StreamExt::split(ws_stream);
+                        let (mut write, mut read) = futures_util::StreamExt::split(ws_stream);
                         let mut seq: u64 = 0;
                         while let Some(msg_result) = read.next().await {
                             match msg_result {
@@ -187,8 +187,7 @@ impl ExchangeConnector for BinanceConnector {
                                     break;
                                 }
                                 Ok(tokio_tungstenite::tungstenite::Message::Ping(data)) => {
-                                    // Respond with pong so server keeps connection alive (tungstenite may do this)
-                                    let _ = data;
+                                    let _ = write.send(tokio_tungstenite::tungstenite::Message::Pong(data)).await;
                                 }
                                 Err(e) => {
                                     let reason = e.to_string();
@@ -213,6 +212,7 @@ impl ExchangeConnector for BinanceConnector {
         Ok(rx)
     }
 
+    // TODO: implement Binance REST order submission (POST /api/v3/order with HMAC-SHA256 signing).
     async fn submit_order(&self, _request: OrderRequest) -> Result<String> {
         Err(hft_core::HftError::Exchange(
             "Binance REST order submission not implemented".to_string(),

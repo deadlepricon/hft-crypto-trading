@@ -44,7 +44,7 @@ pub fn pnl_latency_widget(app: &App, metrics: &Metrics) -> Paragraph<'static> {
         Line::from(format!("  Buy Win %:         {:.1}%  ({}/{})", buy_win_pct, app.buy_wins, app.buy_wins + app.buy_losses)),
         Line::from(format!("  Sell Win %:        {:.1}%  ({}/{})", sell_win_pct, app.sell_wins, app.sell_wins + app.sell_losses)),
         Line::from(""),
-        Line::from(format!("  Sharpe ratio:      {:.2}", app.sharpe_ratio())),
+        Line::from(format!("  PnL Sharpe:        {:.2}  (PnL-based proxy, not standard Sharpe)", app.sharpe_ratio())),
         Line::from(format!("  Max drawdown:      {}", fmt_pnl(app.max_drawdown))),
         Line::from(format!("  Profit per minute: {}", fmt_pnl(app.profit_per_minute()))),
         Line::from(""),

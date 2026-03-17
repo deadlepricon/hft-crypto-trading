@@ -16,7 +16,7 @@ use hft_feed_handler::FeedEvent;
 use hft_order_book::OrderBook;
 use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{order_request, Signal, Strategy};
 
@@ -33,11 +33,11 @@ enum Regime {
 pub struct ImbalanceParams {
     /// Number of top levels on each side to sum for imbalance.
     pub book_depth: usize,
-    /// Default threshold when buy/sell specific ones are not set (same units as book qty, e.g. BTC).
+    /// Default threshold when buy/sell specific ones are not set (normalized ratio in [-1, 1], e.g. 0.05 = 5%).
     pub imbalance_threshold: Decimal,
-    /// Optional: threshold for BUY (bid-heavy). If None, uses imbalance_threshold. Lower = exit shorts sooner.
+    /// Optional: threshold for BUY (bid-heavy). If None, uses imbalance_threshold.
     pub imbalance_threshold_buy: Option<Decimal>,
-    /// Optional: threshold for SELL (ask-heavy). If None, uses imbalance_threshold. Higher = only sell when clearly ask-heavy.
+    /// Optional: threshold for SELL (ask-heavy). If None, uses imbalance_threshold.
     pub imbalance_threshold_sell: Option<Decimal>,
     /// Fixed order size per signal (e.g. 0.001 BTC).
     pub order_size: Qty,
@@ -51,7 +51,7 @@ impl Default for ImbalanceParams {
     fn default() -> Self {
         Self {
             book_depth: 10,
-            imbalance_threshold: Decimal::new(1, 2), // 0.01
+            imbalance_threshold: Decimal::new(5, 2), // 0.05 (5% ratio)
             imbalance_threshold_buy: None,
             imbalance_threshold_sell: None,
             order_size: Decimal::new(1, 3), // 0.001
@@ -93,7 +93,11 @@ impl Strategy for ImbalanceStrategy {
         let bid_qty: Decimal = bids.iter().map(|l| l.qty).sum();
         let ask_qty: Decimal = asks.iter().map(|l| l.qty).sum();
 
-        let imbalance = bid_qty - ask_qty;
+        let total = bid_qty + ask_qty;
+        if total.is_zero() {
+            return;
+        }
+        let imbalance = (bid_qty - ask_qty) / total;
         let th_buy = self.params.imbalance_threshold_buy.unwrap_or(self.params.imbalance_threshold);
         let th_sell = self.params.imbalance_threshold_sell.unwrap_or(self.params.imbalance_threshold);
 
@@ -135,11 +139,13 @@ impl Strategy for ImbalanceStrategy {
                 self.params.order_size,
                 price,
             );
-            let _ = signal_tx.try_send(Signal {
+            if signal_tx.try_send(Signal {
                 request: req,
                 strategy_id: self.name().to_string(),
                 generated_at: std::time::Instant::now(),
-            });
+            }).is_err() {
+                warn!(strategy = "imbalance", "signal channel full, BUY signal dropped");
+            }
             debug!(imbalance = %imbalance, "imbalance BUY (transition)");
         } else if should_sell {
             let price = self.params.use_limit.then(|| bids.first().map(|l| l.price)).flatten();
@@ -149,11 +155,13 @@ impl Strategy for ImbalanceStrategy {
                 self.params.order_size,
                 price,
             );
-            let _ = signal_tx.try_send(Signal {
+            if signal_tx.try_send(Signal {
                 request: req,
                 strategy_id: self.name().to_string(),
                 generated_at: std::time::Instant::now(),
-            });
+            }).is_err() {
+                warn!(strategy = "imbalance", "signal channel full, SELL signal dropped");
+            }
             debug!(imbalance = %imbalance, "imbalance SELL (transition)");
         }
     }

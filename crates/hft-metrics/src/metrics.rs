@@ -24,6 +24,8 @@ pub struct Metrics {
     pub trades_received: AtomicU64,
     /// Last feed-to-processing latency in microseconds (stub: set by feed handler).
     pub latency_feed_us: AtomicU64,
+    /// Cumulative number of broadcast messages dropped because a subscriber lagged.
+    pub feed_events_lagged: AtomicU64,
 }
 
 impl Metrics {
@@ -61,6 +63,14 @@ impl Metrics {
 
     pub fn set_latency_feed_us(&self, us: u64) {
         self.latency_feed_us.store(us, Ordering::Relaxed);
+    }
+
+    pub fn inc_feed_events_lagged(&self, n: u64) {
+        self.feed_events_lagged.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn feed_events_lagged(&self) -> u64 {
+        self.feed_events_lagged.load(Ordering::Relaxed)
     }
 
     pub fn feed_messages(&self) -> u64 {

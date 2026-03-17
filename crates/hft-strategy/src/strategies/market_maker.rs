@@ -6,8 +6,8 @@
 //!   ask-heavy → shift both quotes down (more aggressive buy).
 //!
 //! **Inventory**
-//! - Track position via [Strategy::on_fill] (fill feedback from execution). Too long: widen ask,
-//!   tighten bid to encourage selling. Too short: opposite.
+//! - Track position via [Strategy::on_fill] (fill feedback from execution). Too long: lower bid
+//!   (discourages buying more) and lower ask (more competitive, encourages sells). Too short: opposite.
 //!
 //! **Re-quote only when**
 //! - Mid price moves by more than min_tick_move.
@@ -19,7 +19,7 @@ use hft_feed_handler::FeedEvent;
 use hft_order_book::OrderBook;
 use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{order_request, Signal, Strategy, StrategyFill};
 
@@ -159,18 +159,22 @@ impl MarketMakerStrategy {
         let name = self.name().to_string();
 
         let buy_req = order_request(symbol.clone(), OrderSide::Buy, qty, Some(buy_price));
-        let _ = signal_tx.try_send(Signal {
+        if signal_tx.try_send(Signal {
             request: buy_req,
             strategy_id: name.clone(),
             generated_at: std::time::Instant::now(),
-        });
+        }).is_err() {
+            warn!(strategy = "market_maker", "signal channel full, buy quote dropped");
+        }
 
         let sell_req = order_request(symbol, OrderSide::Sell, qty, Some(sell_price));
-        let _ = signal_tx.try_send(Signal {
+        if signal_tx.try_send(Signal {
             request: sell_req,
             strategy_id: name,
             generated_at: std::time::Instant::now(),
-        });
+        }).is_err() {
+            warn!(strategy = "market_maker", "signal channel full, sell quote dropped");
+        }
     }
 }
 
@@ -219,15 +223,23 @@ impl Strategy for MarketMakerStrategy {
             sell_price = sell_price + shift;
         }
 
-        // Inventory skew: too long → widen ask, tighten bid; too short → opposite.
+        // Inventory skew: too long → lower both quotes to reduce inventory.
+        //   inv_shift > 0 when long → subtract to push prices down:
+        //     bid drops 1.5× (less attractive to buyers, discourages us buying more)
+        //     ask drops 0.5× (more competitive, more likely someone hits our sell)
+        //   Short: the opposite — raise both to attract buys and reduce short.
         if !self.params.max_inventory.is_zero() {
             let inv_ratio = (inventory / self.params.max_inventory)
                 .clamp(Decimal::from(-1), Decimal::from(1));
             let inv_bps = inv_ratio * Decimal::from(50); // up to ±50 bps
             let inv_shift = mid * (inv_bps / bps);
-            // Long: bid up a bit (tighten), ask up more (widen). Short: bid down more, ask down a bit.
-            buy_price = buy_price + inv_shift * Decimal::from(5) / Decimal::from(10);  // 0.5
-            sell_price = sell_price + inv_shift * Decimal::from(15) / Decimal::from(10); // 1.5
+            buy_price  = buy_price  - inv_shift * Decimal::from(15) / Decimal::from(10); // 1.5×
+            sell_price = sell_price - inv_shift * Decimal::from(5)  / Decimal::from(10); // 0.5×
+        }
+
+        if buy_price >= sell_price {
+            warn!(buy = %buy_price, sell = %sell_price, "market_maker: skew produced crossed quotes, skipping re-quote");
+            return;
         }
 
         self.emit_quotes(buy_price, sell_price, signal_tx);

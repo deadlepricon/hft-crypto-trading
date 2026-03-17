@@ -33,8 +33,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Redirect all tracing output to the log file so it never writes to stderr/stdout
+    // and corrupts the ratatui TUI (which uses raw mode + alternate screen).
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("hft_ui.log")?;
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+        .with_writer(std::sync::Mutex::new(log_file))
+        .with_ansi(false)
         .init();
 
     let paper_trading = env::var("PAPER_TRADING")
@@ -75,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (feed_handler, feed_tx) = FeedHandler::new(
         feed_connector,
         Arc::clone(&order_book),
-        1024,
+        4096,
         fill_event_tx,
     );
     let feed_rx_ui = feed_tx.subscribe();
@@ -133,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let risk_limits = hft_risk::RiskLimits::default();
-    let risk = hft_risk::RiskManager::new(risk_limits, order_tx);
+    let risk = Arc::new(hft_risk::RiskManager::new(risk_limits, order_tx));
 
     let (fill_tx_ui, fill_rx_ui_channel): (
         mpsc::UnboundedSender<hft_execution::PaperFill>,
@@ -145,7 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ) = mpsc::unbounded_channel();
     let position_tracker: Arc<dyn hft_execution::PositionTracker> = Arc::new(PaperPositionTracker::new());
 
-    let execution = if paper_trading {
+    let mut execution = if paper_trading {
         hft_execution::ExecutionEngine::new_paper(
             Arc::clone(&order_book),
             order_rx,
@@ -155,9 +163,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             paper_submit_connector,
         )
     } else {
+        if matches!(backend, ExchangeBackend::Binance) {
+            tracing::error!(
+                "LIVE MODE with BinanceConnector: order submission is NOT implemented. \
+                 All orders will fail silently. Set PAPER_TRADING=true or implement \
+                 Binance REST signing in hft-exchange/src/binance.rs before going live."
+            );
+        }
         let execution_connector = create_connector_with_env(backend, symbol.clone());
         hft_execution::ExecutionEngine::new_live(execution_connector, order_rx)
     };
+
+    // Wire execution → risk position feedback so limits track real fills.
+    let (risk_pos_tx, mut risk_pos_rx) = mpsc::channel::<(String, f64)>(256);
+    let risk_pos_tx_fill_proc = risk_pos_tx.clone();
+    execution.set_risk_position_tx(risk_pos_tx);
 
     let run_fill_processor = async move {
         if let Some(mut fill_event_rx) = fill_event_rx {
@@ -171,31 +191,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     time_in_force: None,
                     client_order_id: fill.client_order_id.clone(),
                 };
-                let (pnl_delta, is_buy, unrealized_pnl) =
+                let (pnl_delta, is_buy, unrealized_pnl, qty_after, entry_price_after) =
                     position_tracker.apply_fill(&req, fill.price);
+                // Update risk manager position so limits track simulator fills.
+                let qty_f: f64 = req.qty.to_string().parse().unwrap_or(0.0);
+                let delta = if matches!(req.side, hft_core::OrderSide::Buy) { qty_f } else { -qty_f };
+                let _ = risk_pos_tx_fill_proc.send((req.symbol.clone(), delta)).await;
                 let paper_fill = hft_execution::PaperFill {
                     request: req,
                     fill_price: fill.price,
                     pnl_delta,
                     is_buy,
                     unrealized_pnl,
+                    qty_after,
+                    entry_price_after,
                 };
                 let _ = fill_tx_ui.send(paper_fill);
-                let strategy_id = fill
-                    .client_order_id
-                    .unwrap_or_else(|| "unknown".to_string());
-                let _ = fill_tx_strategy.send(StrategyFill {
-                    strategy_id,
-                    symbol: fill.symbol,
-                    side: fill.side,
-                    filled_qty: fill.qty,
-                    fill_price: fill.price,
-                });
+                match fill.client_order_id {
+                    Some(strategy_id) => {
+                        let _ = fill_tx_strategy.send(StrategyFill {
+                            strategy_id,
+                            symbol: fill.symbol,
+                            side: fill.side,
+                            filled_qty: fill.qty,
+                            fill_price: fill.price,
+                        });
+                    }
+                    None => {
+                        tracing::warn!(
+                            symbol = %fill.symbol,
+                            "simulator fill missing client_order_id; strategy fill feedback skipped"
+                        );
+                    }
+                }
             }
         } else {
             std::future::pending::<()>().await;
         }
     };
+
+    let risk_for_run = Arc::clone(&risk);
+    let risk_for_pos = Arc::clone(&risk);
 
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -212,14 +248,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let run_engine = async {
                 engine.run(feed_rx_engine, Some(fill_rx_strategy)).await;
             };
-            let run_risk = async {
-                let _ = risk.run(signal_rx).await;
+            let run_risk = async move {
+                let _ = risk_for_run.run(signal_rx).await;
             };
             let run_exec = async {
                 let mut exec = execution;
                 let _ = exec.run().await;
             };
-            tokio::join!(run_engine, run_risk, run_exec, run_fill_processor);
+            let run_risk_pos = async move {
+                while let Some((symbol, delta)) = risk_pos_rx.recv().await {
+                    risk_for_pos.update_position(&symbol, delta);
+                }
+            };
+            tokio::join!(run_engine, run_risk, run_exec, run_fill_processor, run_risk_pos);
         });
     });
 

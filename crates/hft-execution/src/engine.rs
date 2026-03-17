@@ -37,19 +37,23 @@ pub struct PaperFill {
     pub is_buy: bool,
     /// Unrealized PnL after this fill (position * (mark - entry)) so UI can show live PnL.
     pub unrealized_pnl: f64,
+    /// Net position size after this fill (positive=long, negative=short, 0=flat).
+    pub qty_after: f64,
+    /// Weighted-average entry price of the position after this fill.
+    pub entry_price_after: f64,
 }
 
 /// Called by paper execution to compute PnL and update internal position state.
 pub trait PositionTracker: Send + Sync {
-    /// Returns (realized_pnl_delta, is_buy, unrealized_pnl_after_fill).
-    fn apply_fill(&self, req: &hft_core::OrderRequest, fill_price: Decimal) -> (f64, bool, f64);
+    /// Returns (realized_pnl_delta, is_buy, unrealized_pnl_after_fill, qty_after, entry_price_after).
+    fn apply_fill(&self, req: &hft_core::OrderRequest, fill_price: Decimal) -> (f64, bool, f64, f64, f64);
 }
 
 /// Execution engine: submits orders (live or paper) and reports fills.
 pub struct ExecutionEngine {
     mode: ExecutionMode,
     order_rx: mpsc::Receiver<OrderWithStrategy>,
-    risk_position_tx: Option<mpsc::Sender<(String, i64)>>,
+    risk_position_tx: Option<mpsc::Sender<(String, f64)>>,
 }
 
 impl ExecutionEngine {
@@ -90,7 +94,7 @@ impl ExecutionEngine {
     }
 
     /// Set channel to push position deltas to the risk manager.
-    pub fn set_risk_position_tx(&mut self, tx: mpsc::Sender<(String, i64)>) {
+    pub fn set_risk_position_tx(&mut self, tx: mpsc::Sender<(String, f64)>) {
         self.risk_position_tx = Some(tx);
     }
 
@@ -133,13 +137,16 @@ impl ExecutionEngine {
                             .or_else(|| order_book.best_bid())
                             .or_else(|| order_book.best_ask())
                             .unwrap_or(Decimal::ZERO);
-                        let (pnl_delta, is_buy, unrealized_pnl) = position_tracker.apply_fill(&req, fill_price);
+                        let (pnl_delta, is_buy, unrealized_pnl, qty_after, entry_price_after) =
+                            position_tracker.apply_fill(&req, fill_price);
                         if fill_tx.send(PaperFill {
                             request: req.clone(),
                             fill_price,
                             pnl_delta,
                             is_buy,
                             unrealized_pnl,
+                            qty_after,
+                            entry_price_after,
                         }).is_err() {
                             break;
                         }
@@ -153,8 +160,8 @@ impl ExecutionEngine {
                             });
                         }
                         if let Some(ref tx) = self.risk_position_tx {
-                            let qty: i64 = req.qty.to_string().parse().unwrap_or(0);
-                            let delta = if matches!(req.side, OrderSide::Buy) { qty } else { -qty };
+                            let qty_f: f64 = req.qty.to_string().parse().unwrap_or(0.0);
+                            let delta = if matches!(req.side, OrderSide::Buy) { qty_f } else { -qty_f };
                             let _ = tx.send((req.symbol.clone(), delta)).await;
                         }
                     }

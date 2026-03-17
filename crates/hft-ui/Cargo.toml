@@ -14,3 +14,4 @@ rust_decimal = { version = "1.33", features = ["std"] }
 ratatui = "0.28"
 crossterm = "0.28"
 tokio = { version = "1", features = ["sync", "time", "rt-multi-thread"] }
+tracing = "0.1"

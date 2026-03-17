@@ -73,6 +73,23 @@ fn run_loop(
             while let Ok(fill) = rx.try_recv() {
                 app.metrics.inc_fills();
                 app.record_trade_result(fill.pnl_delta, fill.is_buy, fill.unrealized_pnl);
+                // Update positions panel: remove flat positions, upsert live ones.
+                let symbol = fill.request.symbol.clone();
+                if fill.qty_after.abs() < 1e-9 {
+                    app.positions.retain(|p| p.symbol != symbol);
+                } else {
+                    let new_line = crate::app::PositionLine {
+                        symbol: symbol.clone(),
+                        qty: format!("{:.6}", fill.qty_after),
+                        entry_price: format!("{:.2}", fill.entry_price_after),
+                        unrealized_pnl: format!("{:.4}", fill.unrealized_pnl),
+                    };
+                    if let Some(existing) = app.positions.iter_mut().find(|p| p.symbol == symbol) {
+                        *existing = new_line;
+                    } else {
+                        app.positions.push(new_line);
+                    }
+                }
                 let side_str = if fill.is_buy { "Buy" } else { "Sell" };
                 app.push_trade(TradeLine {
                     symbol: fill.request.symbol.clone(),
@@ -137,7 +154,21 @@ fn run_loop(
                     }
                     Err(broadcast::error::TryRecvError::Lagged(n)) => {
                         if n > 0 {
-                            let lag_log = format!("Feed lagged (dropped {} messages); resyncing.", n);
+                            let prev = app.metrics.feed_events_lagged();
+                            app.metrics.inc_feed_events_lagged(n);
+                            let total = app.metrics.feed_events_lagged();
+                            // Warn every 100 cumulative dropped events so operator knows consumer is slow.
+                            if prev / 100 < total / 100 {
+                                tracing::warn!(
+                                    dropped = n,
+                                    total_lagged = total,
+                                    "feed broadcast lagging: consumer too slow, consider reducing strategy work"
+                                );
+                            }
+                            let lag_log = format!(
+                                "Feed lagged (dropped {} messages, {} total); resyncing.",
+                                n, total
+                            );
                             write_log(app, log_file, &lag_log);
                         }
                         break;

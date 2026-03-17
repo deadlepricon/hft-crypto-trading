@@ -124,8 +124,16 @@ impl PerformanceMetrics {
         (max_dd, max_dd_pct)
     }
 
-    /// Sharpe ratio (annualized if we treat each trade as one period; simplified).
-    /// Uses excess returns over risk_free_rate; assumes 252 trading days and one trade per day for annualization.
+    /// PnL-based Sharpe proxy (NOT comparable to standard finance Sharpe ratio).
+    ///
+    /// Returns: (mean_trade_pnl - risk_free_rate/252) / std_dev_trade_pnl * sqrt(252).
+    ///
+    /// Limitations:
+    /// - Numerator is USDT per trade; denominator is also USDT per trade — the ratio is
+    ///   dimensionless but not a true return-based Sharpe.
+    /// - Annualization factor sqrt(252) assumes one trade per calendar day, which is wrong
+    ///   for HFT where hundreds of trades may occur per minute.
+    /// - Use this only for relative comparison between strategies, not as an absolute metric.
     fn sharpe_from_trades(
         outcomes: &[crate::trade::TradeOutcome],
         risk_free_rate: f64,

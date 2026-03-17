@@ -39,8 +39,8 @@ impl Default for RiskLimits {
 /// Risk manager: consumes signals, validates, forwards approved [OrderWithStrategy]s so execution can route fills.
 pub struct RiskManager {
     limits: RiskLimits,
-    /// Current positions (symbol -> net qty); updated from execution layer in full impl.
-    positions: RwLock<HashMap<String, i64>>,
+    /// Current positions (symbol -> net qty in asset units); updated from execution layer.
+    positions: RwLock<HashMap<String, f64>>,
     approved_tx: mpsc::Sender<OrderWithStrategy>,
 }
 
@@ -55,24 +55,26 @@ impl RiskManager {
     }
 
     /// Update position for a symbol (called when execution reports fills).
-    pub fn update_position(&self, symbol: &str, delta: i64) {
+    /// `delta` is signed qty in asset units: positive for buy, negative for sell.
+    pub fn update_position(&self, symbol: &str, delta: f64) {
         let mut guard = self.positions.write();
-        let entry = guard.entry(symbol.to_string()).or_insert(0);
+        let entry = guard.entry(symbol.to_string()).or_insert(0.0);
         *entry += delta;
     }
 
     /// Process a signal: validate and either forward to execution or reject.
     pub async fn check_signal(&self, signal: Signal) -> Result<()> {
         let req = &signal.request;
-        let current = self.positions.read().get(req.symbol.as_str()).copied().unwrap_or(0);
-        let qty = req.qty.to_string().parse::<i64>().unwrap_or(0);
+        let current = self.positions.read().get(req.symbol.as_str()).copied().unwrap_or(0.0);
+        // Parse as f64 so fractional quantities like 0.001 BTC are handled correctly.
+        let qty_f: f64 = req.qty.to_string().parse().unwrap_or(0.0);
         let new_position = current + if matches!(req.side, hft_core::OrderSide::Buy) {
-            qty
+            qty_f
         } else {
-            -qty
+            -qty_f
         };
 
-        if new_position.unsigned_abs() > self.limits.max_position_per_symbol {
+        if new_position.abs() > self.limits.max_position_per_symbol as f64 {
             warn!(
                 symbol = %req.symbol,
                 new_position,
@@ -84,10 +86,10 @@ impl RiskManager {
             ));
         }
 
-        if qty.unsigned_abs() > self.limits.max_order_size {
+        if qty_f > self.limits.max_order_size as f64 {
             warn!(
                 symbol = %req.symbol,
-                qty,
+                qty = qty_f,
                 limit = self.limits.max_order_size,
                 "risk: order size limit exceeded"
             );

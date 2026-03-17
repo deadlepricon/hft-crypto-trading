@@ -210,11 +210,15 @@ impl App {
         if drawdown > self.max_drawdown && drawdown.is_finite() {
             self.max_drawdown = drawdown.clamp(0.0, PNL_CLAMP);
         }
-        self.trade_pnls.push_back(pnl_delta);
-        while self.trade_pnls.len() > MAX_TRADE_PNLS {
-            self.trade_pnls.pop_front();
+        // Only include realized PnL in the Sharpe sample; opening fills (pnl_delta == 0)
+        // would pull the mean toward zero and dilute the ratio.
+        if pnl_delta != 0.0 {
+            self.trade_pnls.push_back(pnl_delta);
+            while self.trade_pnls.len() > MAX_TRADE_PNLS {
+                self.trade_pnls.pop_front();
+            }
         }
-        // Only count win/loss when we realize PnL (closing trade); opens have pnl_delta == 0
+        // Count win/loss only on realized PnL (closing trade)
         if pnl_delta != 0.0 {
             let is_win = pnl_delta > 0.0;
             if is_win {

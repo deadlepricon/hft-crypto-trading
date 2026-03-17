@@ -43,7 +43,7 @@ impl Default for PaperPositionTracker {
 }
 
 impl PositionTracker for PaperPositionTracker {
-    fn apply_fill(&self, req: &OrderRequest, fill_price: Decimal) -> (f64, bool, f64) {
+    fn apply_fill(&self, req: &OrderRequest, fill_price: Decimal) -> (f64, bool, f64, f64, f64) {
         let is_buy = matches!(req.side, OrderSide::Buy);
         let price_f: f64 = fill_price.to_string().parse().unwrap_or(0.0);
 
@@ -72,7 +72,9 @@ impl PositionTracker for PaperPositionTracker {
                 pos.qty = 0.0;
                 pos.entry_price = 0.0;
             } else {
-                pos.entry_price = if pos.qty == 0.0 {
+                pos.entry_price = if pos.qty == 0.0 || (pos.qty < 0.0 && new_qty > 0.0) {
+                    // Starting flat, or the fill crossed from short to long: the new long
+                    // position was established entirely at this fill price.
                     price_f
                 } else {
                     let wavg = (pos.entry_price * pos.qty + price_f * signed_qty_f) / new_qty;
@@ -134,6 +136,6 @@ impl PositionTracker for PaperPositionTracker {
                 .clamp(-PNL_CLAMP, PNL_CLAMP);
         }
 
-        (pnl_delta, is_buy, unrealized)
+        (pnl_delta, is_buy, unrealized, pos.qty, pos.entry_price)
     }
 }

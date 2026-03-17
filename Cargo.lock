@@ -793,6 +793,7 @@ dependencies = [
  "ratatui",
  "rust_decimal",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

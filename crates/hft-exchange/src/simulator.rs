@@ -18,7 +18,7 @@ use hft_core::{
     OrderId, OrderRequest, OrderSide, OrderType, Result, TradeId,
     types::{Level, Qty},
 };
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use tokio::sync::mpsc;
@@ -68,7 +68,8 @@ impl SimulatorConnector {
 }
 
 fn f64_to_decimal(v: f64) -> Qty {
-    Decimal::from_str(&format!("{v}")).unwrap_or(Decimal::ZERO)
+    // Use 10 decimal places to avoid the ~6 significant-digit truncation of default Display.
+    Decimal::from_str(&format!("{v:.10}")).unwrap_or(Decimal::ZERO)
 }
 
 /// Parse timestamp from JSON: string "1699900123456", number, or null → Option<DateTime<Utc>>.
@@ -129,7 +130,7 @@ impl ExchangeConnector for SimulatorConnector {
             loop {
                 match tokio_tungstenite::connect_async(&ws_url).await {
                     Ok((ws_stream, _)) => {
-                        let (_write, mut read) = futures_util::StreamExt::split(ws_stream);
+                        let (mut write, mut read) = futures_util::StreamExt::split(ws_stream);
                         while let Some(msg_result) = read.next().await {
                             match msg_result {
                                 Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
@@ -137,7 +138,7 @@ impl ExchangeConnector for SimulatorConnector {
                                         let channel = env.channel.as_deref().unwrap_or("");
                                         let msg_type = env.msg_type.as_deref().unwrap_or("");
                                         if let Some(data) = env.data {
-                                            if channel == "book" && msg_type == "delta" {
+                                            if channel == "book" && (msg_type == "delta" || msg_type == "snapshot" || msg_type == "update") {
                                                 if let Ok(d) = serde_json::from_value::<BookDeltaData>(data) {
                                                     let bids: Vec<Level> = d
                                                         .bids
@@ -155,13 +156,24 @@ impl ExchangeConnector for SimulatorConnector {
                                                             qty: f64_to_decimal(l.quantity),
                                                         })
                                                         .collect();
-                                                    let delta = OrderBookDelta {
-                                                        symbol: d.symbol,
-                                                        bids,
-                                                        asks,
-                                                        sequence: d.sequence,
+                                                    // "snapshot" and "update" are treated as a full
+                                                    // replace so the feed handler clears stale levels.
+                                                    let msg = if msg_type == "snapshot" || msg_type == "update" {
+                                                        ExchangeMessage::OrderBookSnapshot(OrderBookSnapshot {
+                                                            symbol: d.symbol,
+                                                            bids,
+                                                            asks,
+                                                            sequence: d.sequence,
+                                                        })
+                                                    } else {
+                                                        ExchangeMessage::OrderBookDelta(OrderBookDelta {
+                                                            symbol: d.symbol,
+                                                            bids,
+                                                            asks,
+                                                            sequence: d.sequence,
+                                                        })
                                                     };
-                                                    if tx.send(ExchangeMessage::OrderBookDelta(delta)).is_err() {
+                                                    if tx.send(msg).is_err() {
                                                         break;
                                                     }
                                                 }
@@ -265,6 +277,9 @@ impl ExchangeConnector for SimulatorConnector {
                                             }
                                         }
                                     }
+                                }
+                                Ok(tokio_tungstenite::tungstenite::Message::Ping(data)) => {
+                                    let _ = write.send(tokio_tungstenite::tungstenite::Message::Pong(data)).await;
                                 }
                                 Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
                                     let _ = tx.send(ExchangeMessage::Disconnected {
