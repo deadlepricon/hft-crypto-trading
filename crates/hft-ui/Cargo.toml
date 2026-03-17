@@ -10,6 +10,7 @@ hft-execution = { path = "../hft-execution" }
 hft-feed-handler = { path = "../hft-feed-handler" }
 hft-metrics = { path = "../hft-metrics" }
 hft-order-book = { path = "../hft-order-book" }
+rust_decimal = { version = "1.33", features = ["std"] }
 ratatui = "0.28"
 crossterm = "0.28"
 tokio = { version = "1", features = ["sync", "time", "rt-multi-thread"] }

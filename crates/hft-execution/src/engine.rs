@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 /// Execution mode: live (real exchange) or paper (simulated fills).
+/// Paper mode can optionally submit orders to a connector (e.g. simulator) so the market logs them.
 pub enum ExecutionMode {
     Live(Arc<dyn ExchangeConnector>),
     Paper {
@@ -21,6 +22,8 @@ pub enum ExecutionMode {
         fill_tx: mpsc::UnboundedSender<PaperFill>,
         strategy_fill_tx: Option<mpsc::UnboundedSender<StrategyFill>>,
         position_tracker: Arc<dyn PositionTracker>,
+        /// When set (e.g. simulator), submit each order to the connector so the market logs it; we still simulate fill locally.
+        submit_connector: Option<Arc<dyn ExchangeConnector>>,
     },
 }
 
@@ -64,12 +67,14 @@ impl ExecutionEngine {
 
     /// Paper mode: simulate immediate fill at order book mid, compute PnL via tracker,
     /// send [PaperFill] to UI and optionally [StrategyFill] to strategy engine.
+    /// If `submit_connector` is Some (e.g. simulator), orders are also POSTed to that connector so the market can log them.
     pub fn new_paper(
         order_book: Arc<OrderBook>,
         order_rx: mpsc::Receiver<OrderWithStrategy>,
         fill_tx: mpsc::UnboundedSender<PaperFill>,
         strategy_fill_tx: Option<mpsc::UnboundedSender<StrategyFill>>,
         position_tracker: Arc<dyn PositionTracker>,
+        submit_connector: Option<Arc<dyn ExchangeConnector>>,
     ) -> Self {
         Self {
             mode: ExecutionMode::Paper {
@@ -77,6 +82,7 @@ impl ExecutionEngine {
                 fill_tx,
                 strategy_fill_tx,
                 position_tracker,
+                submit_connector,
             },
             order_rx,
             risk_position_tx: None,
@@ -107,35 +113,50 @@ impl ExecutionEngine {
                     fill_tx,
                     strategy_fill_tx,
                     position_tracker,
+                    submit_connector,
                 } => {
-                    let fill_price = order_book
-                        .mid_price()
-                        .or_else(|| order_book.best_bid())
-                        .or_else(|| order_book.best_ask())
-                        .unwrap_or(Decimal::ZERO);
-                    let (pnl_delta, is_buy, unrealized_pnl) = position_tracker.apply_fill(&req, fill_price);
-                    if fill_tx.send(PaperFill {
-                        request: req.clone(),
-                        fill_price,
-                        pnl_delta,
-                        is_buy,
-                        unrealized_pnl,
-                    }).is_err() {
-                        break;
-                    }
-                    if let Some(tx) = strategy_fill_tx.as_ref() {
-                        let _ = tx.send(StrategyFill {
-                            strategy_id: strategy_id.clone(),
-                            symbol: req.symbol.clone(),
-                            side: req.side,
-                            filled_qty: req.qty,
+                    if let Some(connector) = submit_connector.as_ref() {
+                        let mut req_with_id = req.clone();
+                        req_with_id.client_order_id = Some(strategy_id.clone());
+                        match connector.submit_order(req_with_id).await {
+                            Ok(_order_id) => {
+                                tracing::debug!(symbol = %req.symbol, "paper order submitted to simulator");
+                            }
+                            Err(e) => {
+                                warn!(error = %e, symbol = %req.symbol, "paper submit to market failed");
+                            }
+                        }
+                        // Fills come from simulator WebSocket (channel "orders" type "fill"), not simulated here.
+                    } else {
+                        let fill_price = order_book
+                            .mid_price()
+                            .or_else(|| order_book.best_bid())
+                            .or_else(|| order_book.best_ask())
+                            .unwrap_or(Decimal::ZERO);
+                        let (pnl_delta, is_buy, unrealized_pnl) = position_tracker.apply_fill(&req, fill_price);
+                        if fill_tx.send(PaperFill {
+                            request: req.clone(),
                             fill_price,
-                        });
-                    }
-                    if let Some(ref tx) = self.risk_position_tx {
-                        let qty: i64 = req.qty.to_string().parse().unwrap_or(0);
-                        let delta = if matches!(req.side, OrderSide::Buy) { qty } else { -qty };
-                        let _ = tx.send((req.symbol.clone(), delta)).await;
+                            pnl_delta,
+                            is_buy,
+                            unrealized_pnl,
+                        }).is_err() {
+                            break;
+                        }
+                        if let Some(tx) = strategy_fill_tx.as_ref() {
+                            let _ = tx.send(StrategyFill {
+                                strategy_id: strategy_id.clone(),
+                                symbol: req.symbol.clone(),
+                                side: req.side,
+                                filled_qty: req.qty,
+                                fill_price,
+                            });
+                        }
+                        if let Some(ref tx) = self.risk_position_tx {
+                            let qty: i64 = req.qty.to_string().parse().unwrap_or(0);
+                            let delta = if matches!(req.side, OrderSide::Buy) { qty } else { -qty };
+                            let _ = tx.send((req.symbol.clone(), delta)).await;
+                        }
                     }
                 }
             }

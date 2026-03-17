@@ -9,9 +9,13 @@ use std::collections::HashMap;
 
 /// Clamp PnL values to finite and reasonable range so UI never shows 2e18.
 const PNL_CLAMP: f64 = 1e10;
+/// Max realized PnL from a single fill (avoids one bad fill blowing up the display).
+const PNL_DELTA_MAX_PER_FILL: f64 = 1e6;
 /// Reject order qty outside this range (e.g. 1e-9 to 1e6 BTC) to avoid garbage positions.
 const QTY_MIN: f64 = 1e-9;
 const QTY_MAX: f64 = 1e6;
+/// Positions smaller than this are treated as flat (avoids weighted-avg blow-up when dividing by tiny qty).
+const POSITION_ZERO_THRESHOLD: f64 = 1e-6;
 
 struct PositionState {
     /// Position size: positive = long, negative = short (in asset units, e.g. BTC).
@@ -55,9 +59,16 @@ impl PositionTracker for PaperPositionTracker {
 
         let mut pnl_delta = 0.0;
         if signed_qty_f > 0.0 {
-            // Buy: add to long (or reduce short)
+            // Buy: add to long (or reduce/close short)
+            if pos.qty < -1e-12 {
+                // We're short: part or all of this buy closes the short → realize PnL
+                let close_qty = signed_qty_f.min(-pos.qty);
+                if close_qty > 0.0 {
+                    pnl_delta = (pos.entry_price - price_f) * close_qty; // short profit when buy back lower
+                }
+            }
             let new_qty = pos.qty + signed_qty_f;
-            if new_qty.abs() < 1e-12 {
+            if new_qty.abs() < POSITION_ZERO_THRESHOLD {
                 pos.qty = 0.0;
                 pos.entry_price = 0.0;
             } else {
@@ -65,7 +76,7 @@ impl PositionTracker for PaperPositionTracker {
                     price_f
                 } else {
                     let wavg = (pos.entry_price * pos.qty + price_f * signed_qty_f) / new_qty;
-                    if wavg.is_finite() {
+                    if wavg.is_finite() && wavg.abs() < 1e12 {
                         wavg
                     } else {
                         price_f
@@ -90,15 +101,19 @@ impl PositionTracker for PaperPositionTracker {
                 } else {
                     let old_short = -prev_qty;
                     let new_short = -pos.qty;
-                    if new_short >= 1e-12 {
-                        pos.entry_price =
-                            (pos.entry_price * old_short + price_f * short_qty) / new_short;
+                    if new_short >= POSITION_ZERO_THRESHOLD {
+                        let wavg = (pos.entry_price * old_short + price_f * short_qty) / new_short;
+                        if wavg.is_finite() && wavg.abs() < 1e12 {
+                            pos.entry_price = wavg;
+                        } else {
+                            pos.entry_price = price_f;
+                        }
                     } else {
                         pos.entry_price = price_f;
                     }
                 }
             }
-            if pos.qty.abs() < 1e-12 {
+            if pos.qty.abs() < POSITION_ZERO_THRESHOLD {
                 pos.qty = 0.0;
                 pos.entry_price = 0.0;
             }
@@ -114,7 +129,9 @@ impl PositionTracker for PaperPositionTracker {
         if !pnl_delta.is_finite() || pnl_delta.abs() > PNL_CLAMP {
             pnl_delta = 0.0;
         } else {
-            pnl_delta = pnl_delta.clamp(-PNL_CLAMP, PNL_CLAMP);
+            pnl_delta = pnl_delta
+                .clamp(-PNL_DELTA_MAX_PER_FILL, PNL_DELTA_MAX_PER_FILL)
+                .clamp(-PNL_CLAMP, PNL_CLAMP);
         }
 
         (pnl_delta, is_buy, unrealized)

@@ -7,9 +7,9 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::App;
 
-/// Format PnL for display: finite and capped so we never show 2e18.
+/// Format PnL for display: finite and capped so we never show crazy spikes.
 fn fmt_pnl(x: f64) -> String {
-    if !x.is_finite() || x.abs() >= 1e9 {
+    if !x.is_finite() || x.abs() >= 1e7 {
         "N/A".to_string()
     } else {
         format!("{:.4}", x)
@@ -34,7 +34,10 @@ pub fn pnl_latency_widget(app: &App, metrics: &Metrics) -> Paragraph<'static> {
             fmt_pnl(app.cumulative_pnl),
             fmt_pnl(app.unrealized_pnl)
         )),
-        Line::from(format!("  Our fills:         {}  (round-trips: {} = closed)", app.total_fills, total_trades)),
+        Line::from(format!(
+            "  Our fills:         {}  (orders we sent that filled; round-trips closed: {})",
+            app.total_fills, total_trades
+        )),
         Line::from(format!("  Profit per trade:  {}  (on closed only)", fmt_pnl(app.profit_per_trade()))),
         Line::from(""),
         Line::from(format!("  Win rate:          {:.1}%  ({}/{} closed trades)", win_pct, app.wins, total_trades)),
@@ -45,7 +48,11 @@ pub fn pnl_latency_widget(app: &App, metrics: &Metrics) -> Paragraph<'static> {
         Line::from(format!("  Max drawdown:      {}", fmt_pnl(app.max_drawdown))),
         Line::from(format!("  Profit per minute: {}", fmt_pnl(app.profit_per_minute()))),
         Line::from(""),
-        Line::from(format!("  Trades received:   {}  (market)  Fills: {}  (our)", metrics.trades_received(), metrics.fills())),
+        Line::from(format!(
+            "  Market trades:    {}  (feed)   Our fills: {}  (our orders filled)",
+            metrics.trades_received(),
+            metrics.fills()
+        )),
         Line::from(format!(
             "  Feed latency:      {} µs",
             metrics.latency_feed_us()

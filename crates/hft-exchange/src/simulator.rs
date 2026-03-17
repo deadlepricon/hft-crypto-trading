@@ -14,8 +14,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use hft_core::{
-    events::{OrderBookDelta, OrderBookSnapshot, TradeEvent},
-    OrderRequest, OrderSide, OrderType, Result, TradeId,
+    events::{FillEvent, OrderBookDelta, OrderBookSnapshot, TradeEvent},
+    OrderId, OrderRequest, OrderSide, OrderType, Result, TradeId,
     types::{Level, Qty},
 };
 use futures_util::StreamExt;
@@ -226,6 +226,42 @@ impl ExchangeConnector for SimulatorConnector {
                                                         break;
                                                     }
                                                 }
+                                            } else if channel == "orders" && msg_type == "fill" {
+                                                #[derive(serde::Deserialize)]
+                                                struct FillData {
+                                                    order_id: String,
+                                                    #[serde(default)]
+                                                    client_order_id: Option<String>,
+                                                    symbol: String,
+                                                    side: String,
+                                                    price: f64,
+                                                    quantity: f64,
+                                                    fill_id: String,
+                                                    #[serde(default)]
+                                                    is_maker: bool,
+                                                    timestamp: Option<serde_json::Value>,
+                                                }
+                                                if let Ok(d) = serde_json::from_value::<FillData>(data) {
+                                                    let side = if d.side.to_lowercase().as_str() == "buy" {
+                                                        OrderSide::Buy
+                                                    } else {
+                                                        OrderSide::Sell
+                                                    };
+                                                    let ts = parse_timestamp_ms(&d.timestamp).unwrap_or_else(Utc::now);
+                                                    let fill_ev = FillEvent {
+                                                        order_id: OrderId(d.order_id),
+                                                        trade_id: TradeId(d.fill_id),
+                                                        symbol: d.symbol,
+                                                        side,
+                                                        price: f64_to_decimal(d.price),
+                                                        qty: f64_to_decimal(d.quantity),
+                                                        timestamp: ts,
+                                                        client_order_id: d.client_order_id,
+                                                    };
+                                                    if tx.send(ExchangeMessage::Fill(fill_ev)).is_err() {
+                                                        break;
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -277,7 +313,7 @@ impl ExchangeConnector for SimulatorConnector {
             "order_type": order_type,
             "quantity": quantity,
             "price": price,
-            "client_order_id": Option::<String>::None
+            "client_order_id": request.client_order_id
         });
 
         let url = format!("{}/api/orders", self.base_url);

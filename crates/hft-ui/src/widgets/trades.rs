@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 use crate::app::TradeLine;
 
-/// Build the recent trades paragraph.
+/// Build the recent trades paragraph (our fills + market trades from feed).
 pub fn trades_widget(trades: &VecDeque<TradeLine>, _area: Rect) -> Paragraph<'static> {
     let mut lines: Vec<Line> = vec![Line::from("  Price      Qty   Side")];
     for t in trades.iter().rev().take(20) {
@@ -23,6 +23,6 @@ pub fn trades_widget(trades: &VecDeque<TradeLine>, _area: Rect) -> Paragraph<'st
         ]));
     }
     Paragraph::new(lines)
-        .block(Block::default().title(" Recent Trades ").borders(Borders::ALL))
+        .block(Block::default().title(" Recent Trades (our fills & market) ").borders(Borders::ALL))
         .wrap(Wrap { trim: false })
 }

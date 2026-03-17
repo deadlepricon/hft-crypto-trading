@@ -7,8 +7,16 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Frame;
 use ratatui::Terminal;
-use std::io::Stdout;
+use std::io::{Stdout, Write};
 use tokio::sync::{broadcast, mpsc};
+
+/// Format decimal for log: trim to sensible precision (avoids 0.00040999999999999544).
+fn fmt_qty(d: &rust_decimal::Decimal) -> String {
+    d.round_dp(6).to_string()
+}
+fn fmt_price(d: &rust_decimal::Decimal) -> String {
+    d.round_dp(2).to_string()
+}
 
 use crate::app::{App, TradeLine};
 use crate::widgets::{
@@ -19,18 +27,26 @@ use crate::widgets::{
 /// Run the TUI. If `feed_rx` is Some, drain feed events for price feed and market trades.
 /// If `fill_rx` is Some (paper trading), drain our fills and update PnL / recent trades.
 /// Exit with 'q' or Ctrl+C.
+/// Logs are written to `hft_ui.log` in the current directory; run `tail -f hft_ui.log` in another terminal (start the app first so the file exists).
 pub fn run_ui(
     mut app: App,
     feed_rx: Option<broadcast::Receiver<EventEnvelope<FeedEvent>>>,
     fill_rx: Option<mpsc::UnboundedReceiver<PaperFill>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let log_path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("hft_ui.log");
+    let mut log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    eprintln!("Logs: {} (run 'tail -f hft_ui.log' in another terminal)", log_path.display());
+
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = run_loop(&mut terminal, &mut app, feed_rx, fill_rx);
+    let res = run_loop(&mut terminal, &mut app, &mut log_file, feed_rx, fill_rx);
 
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen)?;
@@ -38,9 +54,16 @@ pub fn run_ui(
     res
 }
 
+fn write_log(app: &mut App, log_file: &mut std::fs::File, line: &str) {
+    app.push_log(line.to_string());
+    let _ = writeln!(log_file, "{}", line);
+    let _ = log_file.flush();
+}
+
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
+    log_file: &mut std::fs::File,
     mut feed_rx: Option<broadcast::Receiver<EventEnvelope<FeedEvent>>>,
     mut fill_rx: Option<mpsc::UnboundedReceiver<PaperFill>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -53,38 +76,74 @@ fn run_loop(
                 let side_str = if fill.is_buy { "Buy" } else { "Sell" };
                 app.push_trade(TradeLine {
                     symbol: fill.request.symbol.clone(),
-                    price: fill.fill_price.to_string(),
-                    qty: fill.request.qty.to_string(),
+                    price: fmt_price(&fill.fill_price),
+                    qty: fmt_qty(&fill.request.qty),
                     side: side_str.to_string(),
                 });
+                let fill_log = format!(
+                    "Fill #{}: {} {} qty={} @ {} | pnl_delta={:.4} cum={:.4} unrl={:.4} | W/L {}/{}",
+                    app.total_fills,
+                    side_str,
+                    fill.request.symbol,
+                    fmt_qty(&fill.request.qty),
+                    fmt_price(&fill.fill_price),
+                    fill.pnl_delta,
+                    app.cumulative_pnl,
+                    app.unrealized_pnl,
+                    app.wins,
+                    app.losses,
+                );
+                write_log(app, log_file, &fill_log);
             }
         }
-        // Drain feed events (price feed + market trades)
+        // Drain feed events (price feed + market trades). Handle Lagged so we don't stall.
         if let Some(rx) = feed_rx.as_mut() {
-            while let Ok(env) = rx.try_recv() {
-                match &env.payload {
-                    FeedEvent::OrderBookSnapshot(_) | FeedEvent::OrderBookDelta(_) => {
-                        let best_bid = app.order_book.best_bid().map(|p| p.to_string()).unwrap_or_default();
-                        let best_ask = app.order_book.best_ask().map(|p| p.to_string()).unwrap_or_default();
-                        if !best_bid.is_empty() || !best_ask.is_empty() {
-                            app.push_price_feed(format!("book best_bid={} best_ask={}", best_bid, best_ask));
+            loop {
+                match rx.try_recv() {
+                    Ok(env) => {
+                        match &env.payload {
+                            FeedEvent::OrderBookSnapshot(_) | FeedEvent::OrderBookDelta(_) => {
+                                let best_bid = app.order_book.best_bid().map(|p| p.to_string()).unwrap_or_default();
+                                let best_ask = app.order_book.best_ask().map(|p| p.to_string()).unwrap_or_default();
+                                if !best_bid.is_empty() || !best_ask.is_empty() {
+                                    app.push_price_feed(format!("book best_bid={} best_ask={}", best_bid, best_ask));
+                                }
+                            }
+                            FeedEvent::Trade(t) => {
+                                app.push_price_feed(format!("trade {:?} @ {} qty={}", t.side, fmt_price(&t.price), fmt_qty(&t.qty)));
+                                app.metrics.inc_trades();
+                                let side_str = match t.side {
+                                    hft_core::OrderSide::Buy => "Buy",
+                                    hft_core::OrderSide::Sell => "Sell",
+                                };
+                                app.push_trade(TradeLine {
+                                    symbol: t.symbol.clone(),
+                                    price: fmt_price(&t.price),
+                                    qty: fmt_qty(&t.qty),
+                                    side: side_str.to_string(),
+                                });
+                                let feed_log = format!(
+                                    "Feed trade: {} {} qty={} @ {} (market trades: {})",
+                                    side_str,
+                                    t.symbol,
+                                    fmt_qty(&t.qty),
+                                    fmt_price(&t.price),
+                                    app.metrics.trades_received(),
+                                );
+                                write_log(app, log_file, &feed_log);
+                            }
+                            FeedEvent::Ticker(_) => {}
                         }
                     }
-                    FeedEvent::Trade(t) => {
-                        app.push_price_feed(format!("trade {:?} @ {} qty={}", t.side, t.price, t.qty));
-                        app.metrics.inc_trades();
-                        let side_str = match t.side {
-                            hft_core::OrderSide::Buy => "Buy",
-                            hft_core::OrderSide::Sell => "Sell",
-                        };
-                        app.push_trade(TradeLine {
-                            symbol: t.symbol.clone(),
-                            price: t.price.to_string(),
-                            qty: t.qty.to_string(),
-                            side: side_str.to_string(),
-                        });
+                    Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                        if n > 0 {
+                            let lag_log = format!("Feed lagged (dropped {} messages); resyncing.", n);
+                            write_log(app, log_file, &lag_log);
+                        }
+                        break;
                     }
-                    FeedEvent::Ticker(_) => {}
+                    Err(broadcast::error::TryRecvError::Closed) => break,
+                    Err(broadcast::error::TryRecvError::Empty) => break,
                 }
             }
         }

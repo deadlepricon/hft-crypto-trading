@@ -4,10 +4,10 @@
 //! and broadcasts [EventEnvelope]<[FeedEvent]> for the strategy engine and UI.
 
 use chrono::Utc;
-use hft_core::events::{EventEnvelope, EventSource, OrderBookDelta, OrderBookSnapshot, TradeEvent};
+use hft_core::events::{EventEnvelope, EventSource, FillEvent, OrderBookDelta, OrderBookSnapshot, TradeEvent};
 use hft_order_book::OrderBook;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::debug;
 
 use hft_exchange::ExchangeMessage;
@@ -36,20 +36,24 @@ pub struct TickerUpdate {
 }
 
 /// Feed handler: subscribes to connector, updates order book, broadcasts FeedEvent.
+/// When `fill_event_tx` is set (e.g. simulator), forwards [FillEvent] from connector so UI/strategy get real fills.
 pub struct FeedHandler {
     connector: Arc<dyn hft_exchange::ExchangeConnector>,
     order_book: Arc<OrderBook>,
     tx: broadcast::Sender<EventEnvelope<FeedEvent>>,
     capacity: usize,
+    fill_event_tx: Option<mpsc::UnboundedSender<FillEvent>>,
 }
 
 impl FeedHandler {
     /// Create a new feed handler. Returns the handler and the broadcast sender.
     /// Call `feed_tx.subscribe()` for each consumer (e.g. UI and strategy engine).
+    /// If `fill_event_tx` is Some (simulator with real fills), connector fill messages are forwarded there.
     pub fn new(
         connector: Arc<dyn hft_exchange::ExchangeConnector>,
         order_book: Arc<OrderBook>,
         capacity: usize,
+        fill_event_tx: Option<mpsc::UnboundedSender<FillEvent>>,
     ) -> (Self, broadcast::Sender<EventEnvelope<FeedEvent>>) {
         let (tx, _rx) = broadcast::channel(capacity);
         let handler = Self {
@@ -57,6 +61,7 @@ impl FeedHandler {
             order_book,
             tx: tx.clone(),
             capacity,
+            fill_event_tx,
         };
         (handler, tx)
     }
@@ -97,9 +102,17 @@ impl FeedHandler {
                     ts: Utc::now(),
                     payload: FeedEvent::Trade(trade),
                 },
-                ExchangeMessage::OrderEvent(_)
-                | ExchangeMessage::Fill(_)
-                | ExchangeMessage::Connected
+                ExchangeMessage::OrderEvent(_) => {
+                    debug!(?msg, "feed handler ignoring order event");
+                    continue;
+                }
+                ExchangeMessage::Fill(fill) => {
+                    if let Some(ref fill_tx) = self.fill_event_tx {
+                        let _ = fill_tx.send(fill);
+                    }
+                    continue;
+                }
+                ExchangeMessage::Connected
                 | ExchangeMessage::Disconnected { .. }
                 | ExchangeMessage::Debug(_) => {
                     debug!(?msg, "feed handler ignoring non-feed message");

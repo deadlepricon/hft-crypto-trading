@@ -48,6 +48,8 @@ pub struct MarketMakerParams {
     pub book_depth: usize,
     /// Minimum mid move (in price units) to trigger re-quote.
     pub min_tick_move: Decimal,
+    /// Minimum milliseconds between re-quotes; avoids spamming when book flickers.
+    pub requote_cooldown_ms: u64,
 }
 
 impl Default for MarketMakerParams {
@@ -55,11 +57,12 @@ impl Default for MarketMakerParams {
         Self {
             symbol: "btcusdt".to_string(),
             qty_per_order: Decimal::new(1, 3), // 0.001
-            spread_bps: 10,
+            spread_bps: 5, // 0.05% — tighter for testing (was 10)
             max_inventory: Decimal::new(10, 3), // 0.01
             imbalance_skew_factor: Decimal::new(5, 0), // 5 bps
             book_depth: 10,
             min_tick_move: Decimal::new(1, 2), // 0.01
+            requote_cooldown_ms: 1000,        // don't re-quote more than once per second
         }
     }
 }
@@ -71,6 +74,8 @@ struct State {
     last_quoted_inventory: Decimal,
     /// Net position from fills: positive = long, negative = short (updated in on_fill).
     inventory: Decimal,
+    /// Time of last re-quote (for cooldown).
+    last_quoted_at: Option<std::time::Instant>,
 }
 
 impl Default for State {
@@ -80,6 +85,7 @@ impl Default for State {
             last_regime: ImbalanceRegime::Neutral,
             last_quoted_inventory: Decimal::ZERO,
             inventory: Decimal::ZERO,
+            last_quoted_at: None,
         }
     }
 }
@@ -106,9 +112,10 @@ impl MarketMakerStrategy {
             return ImbalanceRegime::Neutral;
         }
         let ratio = (bid_qty - ask_qty) / total;
-        if ratio > Decimal::new(1, 2) {
+        // Use 5% threshold so small noise doesn't flip regime on every book update.
+        if ratio > Decimal::new(5, 2) {
             ImbalanceRegime::BidHeavy
-        } else if ratio < Decimal::new(-1, 2) {
+        } else if ratio < Decimal::new(-5, 2) {
             ImbalanceRegime::AskHeavy
         } else {
             ImbalanceRegime::Neutral
@@ -122,6 +129,13 @@ impl MarketMakerStrategy {
         inventory: Decimal,
         state: &State,
     ) -> bool {
+        if self.params.requote_cooldown_ms > 0 {
+            if let Some(t) = state.last_quoted_at {
+                if t.elapsed().as_millis() < self.params.requote_cooldown_ms as u128 {
+                    return false;
+                }
+            }
+        }
         let mid_moved = match state.last_mid {
             None => true,
             Some(lm) => (mid - lm).abs() >= self.params.min_tick_move,
@@ -223,6 +237,7 @@ impl Strategy for MarketMakerStrategy {
             state.last_mid = Some(mid);
             state.last_regime = regime;
             state.last_quoted_inventory = inventory;
+            state.last_quoted_at = Some(std::time::Instant::now());
         }
         debug!(
             mid = %mid,

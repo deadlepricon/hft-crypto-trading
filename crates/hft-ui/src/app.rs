@@ -19,12 +19,12 @@ const MAX_TRADE_PNLS: usize = 1000;
 /// Clamp PnL values so we never store or display crazy numbers (e.g. 2e18).
 const PNL_CLAMP: f64 = 1e10;
 
+/// Sanitize PnL: keep value but clamp to finite range. Never reset to zero on overflow (so UI doesn't "revert").
 fn sanitize_pnl(x: f64) -> f64 {
-    if !x.is_finite() || x.abs() > PNL_CLAMP {
-        0.0
-    } else {
-        x.clamp(-PNL_CLAMP, PNL_CLAMP)
+    if !x.is_finite() {
+        return 0.0;
     }
+    x.clamp(-PNL_CLAMP, PNL_CLAMP)
 }
 
 /// Central app state for the TUI.
@@ -201,6 +201,7 @@ impl App {
             self.first_trade_time = Some(std::time::Instant::now());
         }
         self.cumulative_pnl = sanitize_pnl(self.cumulative_pnl + pnl_delta);
+        self.cumulative_pnl = self.cumulative_pnl.clamp(-PNL_CLAMP, PNL_CLAMP);
         if self.cumulative_pnl > self.peak_pnl {
             self.peak_pnl = self.cumulative_pnl;
         }

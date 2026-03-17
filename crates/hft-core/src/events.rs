@@ -77,4 +77,6 @@ pub struct FillEvent {
     pub price: Price,
     pub qty: Qty,
     pub timestamp: DateTime<Utc>,
+    /// Client order id from the order (e.g. strategy_id), when exchange echoes it back.
+    pub client_order_id: Option<String>,
 }

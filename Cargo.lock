@@ -791,6 +791,7 @@ dependencies = [
  "hft-metrics",
  "hft-order-book",
  "ratatui",
+ "rust_decimal",
  "tokio",
 ]
 

@@ -100,5 +100,6 @@ pub fn order_request(
         qty,
         price,
         time_in_force: None,
+        client_order_id: None,
     }
 }

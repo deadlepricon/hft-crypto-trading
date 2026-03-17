@@ -64,6 +64,8 @@ pub struct OrderRequest {
     pub qty: Qty,
     pub price: Option<Price>,
     pub time_in_force: Option<TimeInForce>,
+    /// Optional client-assigned id (e.g. strategy_id) echoed back in fill messages.
+    pub client_order_id: Option<String>,
 }
 
 /// Time-in-force for limit orders.

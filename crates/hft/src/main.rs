@@ -4,12 +4,13 @@
 //! **PAPER_TRADING** env (default: true). Same code path; only execution hits
 //! the exchange in live mode.
 
+use hft_core::OrderType;
 use hft_exchange::{create_connector_with_env, ExchangeBackend};
 use hft_feed_handler::FeedHandler;
 use hft_metrics::Metrics;
 use hft_order_book::OrderBook;
 use hft_strategy::{
-    MarketMakerParams, MarketMakerStrategy, OrderWithStrategy, StrategyEngine, StrategyFill,
+    create_strategies, strategy_names, OrderWithStrategy, StrategyEngine, StrategyFill,
 };
 use hft_ui::{run_ui, App};
 use std::env;
@@ -43,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .unwrap_or(true);
 
-    let exchange = env::var("EXCHANGE").unwrap_or_else(|_| "binance".to_string());
+    let exchange = env::var("EXCHANGE").unwrap_or_else(|_| "simulator".to_string());
     let symbol = env::var("SYMBOL").unwrap_or_else(|_| {
         if exchange.eq_ignore_ascii_case("binance") {
             "btcusdt".to_string()
@@ -58,7 +59,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let order_book = Arc::new(OrderBook::new(symbol.clone()));
     let metrics = Arc::new(Metrics::new());
 
-    let (feed_handler, feed_tx) = FeedHandler::new(feed_connector, Arc::clone(&order_book), 1024);
+    let paper_submit_connector = if paper_trading && matches!(backend, ExchangeBackend::Simulator) {
+        Some(Arc::clone(&feed_connector))
+    } else {
+        None
+    };
+
+    let (fill_event_tx, fill_event_rx) = if paper_trading && matches!(backend, ExchangeBackend::Simulator) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    let (feed_handler, feed_tx) = FeedHandler::new(
+        feed_connector,
+        Arc::clone(&order_book),
+        1024,
+        fill_event_tx,
+    );
     let feed_rx_ui = feed_tx.subscribe();
     let feed_rx_engine = feed_tx.subscribe();
 
@@ -83,20 +102,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (signal_tx, signal_rx) = mpsc::channel::<hft_strategy::Signal>(1024);
     let (order_tx, order_rx) = mpsc::channel::<OrderWithStrategy>(1024);
 
-    let params = {
-        let mut p = MarketMakerParams::default();
-        p.symbol = symbol.clone();
-        p.qty_per_order = rust_decimal::Decimal::new(1, 3); // 0.001
-        p.spread_bps = 10;
-        p.max_inventory = rust_decimal::Decimal::new(10, 3);
-        p.imbalance_skew_factor = rust_decimal::Decimal::new(5, 0);
-        p.book_depth = 10;
-        p.min_tick_move = rust_decimal::Decimal::new(1, 2); // 0.01
-        p
-    };
-    let strategy = Arc::new(MarketMakerStrategy::new(Arc::clone(&order_book), params));
+    // Strategy selection: default is market maker; use STRATEGIES=imbalance or STRATEGIES=market_maker,imbalance to switch or run both.
+    let strategy_names_input: Vec<String> = env::var("STRATEGIES")
+        .unwrap_or_else(|_| "market_maker".to_string())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let (strategies, created_names) =
+        create_strategies(Arc::clone(&order_book), &symbol, &strategy_names_input);
+    if strategies.is_empty() {
+        eprintln!(
+            "error: no valid strategies. STRATEGIES={:?} — supported: {:?}",
+            strategy_names_input,
+            strategy_names()
+        );
+        std::process::exit(1);
+    }
+    if created_names.len() < strategy_names_input.len() {
+        tracing::warn!(
+            requested = ?strategy_names_input,
+            created = ?created_names,
+            "some strategy names were unknown and skipped"
+        );
+    }
     let mut engine = StrategyEngine::new(signal_tx);
-    engine.add_strategy(strategy);
+    for s in strategies {
+        engine.add_strategy(s);
+    }
 
     let risk_limits = hft_risk::RiskLimits::default();
     let risk = hft_risk::RiskManager::new(risk_limits, order_tx);
@@ -115,13 +149,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hft_execution::ExecutionEngine::new_paper(
             Arc::clone(&order_book),
             order_rx,
-            fill_tx_ui,
-            Some(fill_tx_strategy),
-            position_tracker,
+            fill_tx_ui.clone(),
+            Some(fill_tx_strategy.clone()),
+            Arc::clone(&position_tracker),
+            paper_submit_connector,
         )
     } else {
         let execution_connector = create_connector_with_env(backend, symbol.clone());
         hft_execution::ExecutionEngine::new_live(execution_connector, order_rx)
+    };
+
+    let run_fill_processor = async move {
+        if let Some(mut fill_event_rx) = fill_event_rx {
+            while let Some(fill) = fill_event_rx.recv().await {
+                let req = hft_core::OrderRequest {
+                    symbol: fill.symbol.clone(),
+                    side: fill.side,
+                    order_type: OrderType::Limit,
+                    qty: fill.qty,
+                    price: Some(fill.price),
+                    time_in_force: None,
+                    client_order_id: fill.client_order_id.clone(),
+                };
+                let (pnl_delta, is_buy, unrealized_pnl) =
+                    position_tracker.apply_fill(&req, fill.price);
+                let paper_fill = hft_execution::PaperFill {
+                    request: req,
+                    fill_price: fill.price,
+                    pnl_delta,
+                    is_buy,
+                    unrealized_pnl,
+                };
+                let _ = fill_tx_ui.send(paper_fill);
+                let strategy_id = fill
+                    .client_order_id
+                    .unwrap_or_else(|| "unknown".to_string());
+                let _ = fill_tx_strategy.send(StrategyFill {
+                    strategy_id,
+                    symbol: fill.symbol,
+                    side: fill.side,
+                    filled_qty: fill.qty,
+                    fill_price: fill.price,
+                });
+            }
+        } else {
+            std::future::pending::<()>().await;
+        }
     };
 
     thread::spawn(move || {
@@ -146,7 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut exec = execution;
                 let _ = exec.run().await;
             };
-            tokio::join!(run_engine, run_risk, run_exec);
+            tokio::join!(run_engine, run_risk, run_exec, run_fill_processor);
         });
     });
 
@@ -157,8 +230,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         symbol,
         if paper_trading { "PAPER" } else { "LIVE" }
     ));
+    app.push_log(format!(
+        "Strategies: {} (set STRATEGIES=comma,separated to switch or run multiple)",
+        created_names.join(", ")
+    ));
     app.push_log(if paper_trading {
-        "Paper trading: orders simulated at mid; no exchange submission.".to_string()
+        if matches!(backend, ExchangeBackend::Simulator) {
+            "Paper trading: orders sent to simulator; fills from WebSocket (channel orders/fill).".to_string()
+        } else {
+            "Paper trading: orders simulated at mid; no exchange submission.".to_string()
+        }
     } else {
         "Live trading: orders sent to exchange.".to_string()
     });
