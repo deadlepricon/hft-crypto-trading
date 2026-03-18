@@ -18,20 +18,22 @@ fn fmt_price(d: &rust_decimal::Decimal) -> String {
     d.round_dp(2).to_string()
 }
 
-use crate::app::{App, TradeLine};
+use crate::app::{App, CancelLine, TradeLine};
 use crate::widgets::{
-    logs_widget, order_book_widget, pnl_latency_widget, positions_widget, price_feed_widget,
-    strategy_comparison_widget, trades_widget,
+    cancels_widget, logs_widget, order_book_widget, pnl_latency_widget, positions_widget,
+    price_feed_widget, strategy_comparison_widget, trades_widget,
 };
 
 /// Run the TUI. If `feed_rx` is Some, drain feed events for price feed and market trades.
 /// If `fill_rx` is Some (paper trading), drain our fills and update PnL / recent trades.
+/// If `cancel_rx` is Some, drain cancel events and update the cancels panel.
 /// Exit with 'q' or Ctrl+C.
 /// Logs are written to `hft_ui.log` in the current directory; run `tail -f hft_ui.log` in another terminal (start the app first so the file exists).
 pub fn run_ui(
     mut app: App,
     feed_rx: Option<broadcast::Receiver<EventEnvelope<FeedEvent>>>,
     fill_rx: Option<mpsc::UnboundedReceiver<PaperFill>>,
+    cancel_rx: Option<mpsc::UnboundedReceiver<hft_execution::CancelEvent>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let log_path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("hft_ui.log");
     let mut log_file = std::fs::OpenOptions::new()
@@ -42,11 +44,15 @@ pub fn run_ui(
 
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+    crossterm::execute!(
+        stdout,
+        crossterm::terminal::SetSize(175, 50),
+        crossterm::terminal::EnterAlternateScreen,
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = run_loop(&mut terminal, &mut app, &mut log_file, feed_rx, fill_rx);
+    let res = run_loop(&mut terminal, &mut app, &mut log_file, feed_rx, fill_rx, cancel_rx);
 
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen)?;
@@ -66,6 +72,7 @@ fn run_loop(
     log_file: &mut std::fs::File,
     mut feed_rx: Option<broadcast::Receiver<EventEnvelope<FeedEvent>>>,
     mut fill_rx: Option<mpsc::UnboundedReceiver<PaperFill>>,
+    mut cancel_rx: Option<mpsc::UnboundedReceiver<hft_execution::CancelEvent>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         // Drain paper fills first so PnL / Our fills update before we draw
@@ -113,6 +120,44 @@ fn run_loop(
                 write_log(app, log_file, &fill_log);
             }
         }
+
+        // Drain cancel events
+        if let Some(rx) = cancel_rx.as_mut() {
+            while let Ok(ev) = rx.try_recv() {
+                let ts = {
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    let secs = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+                };
+                let side_str = match ev.side {
+                    hft_core::OrderSide::Buy => "BID",
+                    hft_core::OrderSide::Sell => "ASK",
+                };
+                let cancel_log = format!(
+                    "Cancel #{}: {} {} orig=${} mid@${} [{}]",
+                    app.total_cancels + 1,
+                    side_str,
+                    ev.symbol,
+                    fmt_price(&ev.original_quote_price),
+                    fmt_price(&ev.price_at_cancel),
+                    ev.cancel_reason,
+                );
+                write_log(app, log_file, &cancel_log);
+                app.push_cancel(CancelLine {
+                    timestamp: ts,
+                    order_id: ev.order_id.clone(),
+                    side: side_str.to_string(),
+                    original_quote_price: fmt_price(&ev.original_quote_price),
+                    price_at_cancel: fmt_price(&ev.price_at_cancel),
+                    linked_requote: None,
+                    cancel_reason: ev.cancel_reason.clone(),
+                });
+            }
+        }
+
         // Drain feed events (price feed + market trades). Handle Lagged so we don't stall.
         if let Some(rx) = feed_rx.as_mut() {
             loop {
@@ -187,6 +232,7 @@ fn run_loop(
                     Constraint::Min(16),
                     Constraint::Length(8),
                     Constraint::Min(6),
+                    Constraint::Min(6),
                 ])
                 .split(f.area());
 
@@ -219,8 +265,11 @@ fn run_loop(
             let price_feed = price_feed_widget(&app.price_feed_lines);
             f.render_widget(price_feed, bottom[1]);
 
-            let strategy_comp = strategy_comparison_widget(&app.strategy_comparison, chunks[3]);
-            f.render_widget(strategy_comp, chunks[3]);
+            let cancels = cancels_widget(&app.recent_cancels);
+            f.render_widget(cancels, chunks[3]);
+
+            let strategy_comp = strategy_comparison_widget(&app.strategy_comparison, chunks[4]);
+            f.render_widget(strategy_comp, chunks[4]);
         })?;
 
         // Poll for input with a short timeout

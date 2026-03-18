@@ -48,6 +48,18 @@ pub struct StrategyFill {
     pub side: OrderSide,
     pub filled_qty: Qty,
     pub fill_price: Price,
+    pub order_id: Option<String>,
+}
+
+/// Acknowledgment that an order was accepted by the exchange.
+/// The strategy uses this to track open order IDs for cancel-on-drift.
+#[derive(Debug, Clone)]
+pub struct OrderAck {
+    pub order_id: String,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub side: OrderSide,
+    pub price: Option<Price>,
 }
 
 /// Trait for strategy modules. The engine forwards [FeedEvent] and the
@@ -72,6 +84,10 @@ pub trait Strategy: Send + Sync {
     /// Default: no-op. Override to track inventory accurately.
     fn on_fill(&self, _fill: &StrategyFill) {}
 
+    /// Called when execution confirms a submitted order was accepted (exchange gave it an order_id).
+    /// Default: no-op. Override to track pending orders for cancel-on-drift.
+    fn on_order_ack(&self, _ack: &OrderAck) {}
+
     /// Called on order book snapshot or delta. Default: no-op.
     fn on_orderbook_update(&self, _event: &FeedEvent, _signal_tx: &tokio::sync::mpsc::Sender<Signal>) {
     }
@@ -86,20 +102,24 @@ pub trait Strategy: Send + Sync {
 }
 
 /// Build an [OrderRequest] from symbol, side, optional price and qty (for limit/market).
+/// Limit orders default to GTC so the exchange/simulator does not treat them as IOC/FOK takers.
 pub fn order_request(
     symbol: impl Into<String>,
     side: OrderSide,
     qty: hft_core::Qty,
     price: Option<hft_core::Price>,
 ) -> OrderRequest {
-    use hft_core::OrderType;
+    use hft_core::{OrderType, TimeInForce};
+    let is_limit = price.is_some();
     OrderRequest {
         symbol: symbol.into(),
         side,
-        order_type: if price.is_some() { OrderType::Limit } else { OrderType::Market },
+        order_type: if is_limit { OrderType::Limit } else { OrderType::Market },
         qty,
         price,
-        time_in_force: None,
+        time_in_force: if is_limit { Some(TimeInForce::GTC) } else { None },
         client_order_id: None,
+        cancel_reason: None,
+        cancel_eval_mid: None,
     }
 }

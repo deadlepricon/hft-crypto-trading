@@ -10,7 +10,7 @@ use hft_feed_handler::FeedHandler;
 use hft_metrics::Metrics;
 use hft_order_book::OrderBook;
 use hft_strategy::{
-    create_strategies, strategy_names, OrderWithStrategy, StrategyEngine, StrategyFill,
+    create_strategies, strategy_names, OrderAck, OrderWithStrategy, StrategyEngine, StrategyFill,
 };
 use hft_ui::{run_ui, App};
 use std::env;
@@ -179,6 +179,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let risk_pos_tx_fill_proc = risk_pos_tx.clone();
     execution.set_risk_position_tx(risk_pos_tx);
 
+    // Wire order ack channel: execution → strategy engine (for cancel-on-drift tracking).
+    let (order_ack_tx, order_ack_rx) = mpsc::unbounded_channel::<OrderAck>();
+    execution.set_order_ack_tx(order_ack_tx);
+
+    // Wire cancel event channel: execution → TUI.
+    let (cancel_tx, cancel_rx) = mpsc::unbounded_channel::<hft_execution::CancelEvent>();
+    execution.set_cancel_tx(cancel_tx);
+
     let run_fill_processor = async move {
         if let Some(mut fill_event_rx) = fill_event_rx {
             while let Some(fill) = fill_event_rx.recv().await {
@@ -190,6 +198,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     price: Some(fill.price),
                     time_in_force: None,
                     client_order_id: fill.client_order_id.clone(),
+                    cancel_reason: None,
+                    cancel_eval_mid: None,
                 };
                 let (pnl_delta, is_buy, unrealized_pnl, qty_after, entry_price_after) =
                     position_tracker.apply_fill(&req, fill.price);
@@ -215,6 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             side: fill.side,
                             filled_qty: fill.qty,
                             fill_price: fill.price,
+                            order_id: Some(fill.order_id.0.clone()),
                         });
                     }
                     None => {
@@ -246,7 +257,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         rt.block_on(async {
             let run_engine = async {
-                engine.run(feed_rx_engine, Some(fill_rx_strategy)).await;
+                engine.run(feed_rx_engine, Some(fill_rx_strategy), Some(order_ack_rx)).await;
             };
             let run_risk = async move {
                 let _ = risk_for_run.run(signal_rx).await;
@@ -290,7 +301,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    if let Err(e) = run_ui(app, Some(feed_rx_ui), fill_rx_for_ui) {
+    if let Err(e) = run_ui(app, Some(feed_rx_ui), fill_rx_for_ui, Some(cancel_rx)) {
         eprintln!("UI error: {}", e);
         if e.to_string().contains("raw mode") || e.to_string().contains("terminal") {
             eprintln!("Hint: run this from a real terminal (TTY), not from an IDE.");

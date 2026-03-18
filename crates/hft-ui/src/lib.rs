@@ -10,3 +10,4 @@ pub mod widgets;
 
 pub use app::App;
 pub use run::run_ui;
+pub use hft_execution::CancelEvent;

@@ -87,8 +87,10 @@ impl PositionTracker for PaperPositionTracker {
                 pos.qty = new_qty;
             }
         } else {
-            // Sell: close long and/or open/add to short
-            let close_qty = (-signed_qty_f).min(pos.qty);
+            // Sell: close long and/or open/add to short.
+            // pos.qty.max(0.0) ensures close_qty is never negative when already short,
+            // which would otherwise make short_qty = sell_qty - negative = exponential growth.
+            let close_qty = (-signed_qty_f).min(pos.qty.max(0.0));
             if close_qty > 0.0 {
                 pnl_delta = (price_f - pos.entry_price) * close_qty;
                 pos.qty -= close_qty;
@@ -119,6 +121,13 @@ impl PositionTracker for PaperPositionTracker {
                 pos.qty = 0.0;
                 pos.entry_price = 0.0;
             }
+        }
+
+        // Safety net: if qty somehow overflowed (e.g. due to upstream data corruption), reset to flat
+        // rather than propagating a garbage position to the UI.
+        if !pos.qty.is_finite() || pos.qty.abs() > QTY_MAX {
+            pos.qty = 0.0;
+            pos.entry_price = 0.0;
         }
 
         // Unrealized PnL: position * (mark - entry). Long profits when mark > entry; short when mark < entry.

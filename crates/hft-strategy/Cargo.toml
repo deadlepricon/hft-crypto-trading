@@ -9,5 +9,5 @@ hft-core = { path = "../hft-core" }
 hft-order-book = { path = "../hft-order-book" }
 hft-feed-handler = { path = "../hft-feed-handler" }
 rust_decimal = { version = "1.33", features = ["serde"] }
-tokio = { version = "1", features = ["sync", "time", "rt-multi-thread"] }
+tokio = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros"] }
 tracing = "0.1"

@@ -71,6 +71,12 @@ pub struct App {
     pub total_fills: u64,
     /// Latest unrealized PnL from position tracker (updated on each fill).
     pub unrealized_pnl: f64,
+    /// Recent stale-order cancel events (for the cancels panel).
+    pub recent_cancels: VecDeque<CancelLine>,
+    /// Total number of stale-order cancels since startup.
+    pub total_cancels: u64,
+    /// Time of the first cancel (for cancel rate calculation).
+    pub cancel_start_time: Option<std::time::Instant>,
 }
 
 /// One row for the strategy comparison dashboard (backtest/optimization results).
@@ -102,6 +108,19 @@ pub struct PositionLine {
     pub unrealized_pnl: String,
 }
 
+/// One line for the cancels log.
+#[derive(Clone, Debug)]
+pub struct CancelLine {
+    pub timestamp: String,
+    pub order_id: String,
+    pub side: String,
+    pub original_quote_price: String,
+    pub price_at_cancel: String,
+    pub linked_requote: Option<String>,
+    /// Why this order was cancelled: "DRIFT+AGE", "INVENTORY", or "MAX_AGE".
+    pub cancel_reason: String,
+}
+
 impl App {
     /// Create app state with order book and metrics. Other buffers start empty.
     pub fn new(order_book: Arc<OrderBook>, metrics: Arc<Metrics>) -> Self {
@@ -127,6 +146,9 @@ impl App {
             first_trade_time: None,
             total_fills: 0,
             unrealized_pnl: 0.0,
+            recent_cancels: VecDeque::new(),
+            total_cancels: 0,
+            cancel_start_time: None,
         }
     }
 
@@ -157,6 +179,32 @@ impl App {
             self.price_feed_lines.pop_front();
         }
         self.price_feed_lines.push_back(line);
+    }
+
+    /// Push a cancel event line to the cancels panel.
+    pub fn push_cancel(&mut self, line: CancelLine) {
+        if self.recent_cancels.len() >= 50 {
+            self.recent_cancels.pop_front();
+        }
+        self.recent_cancels.push_back(line);
+        self.total_cancels += 1;
+        if self.cancel_start_time.is_none() {
+            self.cancel_start_time = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Cancels per minute since the first cancel.
+    pub fn cancels_per_minute(&self) -> f64 {
+        let start = match self.cancel_start_time {
+            Some(t) => t,
+            None => return 0.0,
+        };
+        let elapsed = start.elapsed().as_secs_f64();
+        if elapsed < 1.0 {
+            return 0.0;
+        }
+        let r = self.total_cancels as f64 / (elapsed / 60.0);
+        if r.is_finite() { r } else { 0.0 }
     }
 
     /// Overall win rate in [0.0, 1.0].
@@ -268,6 +316,16 @@ impl App {
         }
         let s = (mean / std) * (252.0_f64).sqrt();
         if s.is_finite() { s } else { 0.0 }
+    }
+
+    /// Net fill rate: filled orders / (filled + cancelled). Zero if nothing submitted yet.
+    /// Approximates how often our submitted orders result in a fill vs being cancelled.
+    pub fn net_fill_rate(&self) -> f64 {
+        let denom = self.total_fills + self.total_cancels;
+        if denom == 0 {
+            return 0.0;
+        }
+        self.total_fills as f64 / denom as f64
     }
 
     /// Profit per minute since first trade. Zero if no trades or &lt; 1 minute.

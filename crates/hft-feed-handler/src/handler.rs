@@ -72,9 +72,14 @@ impl FeedHandler {
         let order_book = self.order_book.clone();
         let tx = self.tx;
 
+        let book_symbol = order_book.symbol().to_string();
+
         while let Some(msg) = rx.recv().await {
             let envelope = match msg {
                 ExchangeMessage::OrderBookSnapshot(snap) => {
+                    if snap.symbol != book_symbol {
+                        continue; // wrong symbol — ignore
+                    }
                     order_book.replace(snap.bids.clone(), snap.asks.clone());
                     EventEnvelope {
                         source: EventSource::FeedHandler,
@@ -83,6 +88,9 @@ impl FeedHandler {
                     }
                 }
                 ExchangeMessage::OrderBookDelta(delta) => {
+                    if delta.symbol != book_symbol {
+                        continue; // wrong symbol — ignore
+                    }
                     let bid_tuples: Vec<_> = delta.bids.iter().map(|l| (l.price, l.qty)).collect();
                     let ask_tuples: Vec<_> = delta.asks.iter().map(|l| (l.price, l.qty)).collect();
                     if !bid_tuples.is_empty() {
@@ -97,11 +105,16 @@ impl FeedHandler {
                         payload: FeedEvent::OrderBookDelta(delta),
                     }
                 }
-                ExchangeMessage::Trade(trade) => EventEnvelope {
-                    source: EventSource::FeedHandler,
-                    ts: Utc::now(),
-                    payload: FeedEvent::Trade(trade),
-                },
+                ExchangeMessage::Trade(trade) => {
+                    if trade.symbol != book_symbol {
+                        continue; // wrong symbol — ignore
+                    }
+                    EventEnvelope {
+                        source: EventSource::FeedHandler,
+                        ts: Utc::now(),
+                        payload: FeedEvent::Trade(trade),
+                    }
+                }
                 ExchangeMessage::OrderEvent(_) => {
                     debug!(?msg, "feed handler ignoring order event");
                     continue;

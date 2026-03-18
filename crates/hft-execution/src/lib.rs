@@ -6,4 +6,4 @@
 
 mod engine;
 
-pub use engine::{ExecutionEngine, ExecutionMode, PaperFill, PositionTracker};
+pub use engine::{CancelEvent, ExecutionEngine, ExecutionMode, PaperFill, PositionTracker};

@@ -12,5 +12,5 @@ pub use engine::StrategyEngine;
 pub use registry::{create_strategy, create_strategies, strategy_names};
 pub use strategies::{
     order_request, ImbalanceParams, ImbalanceStrategy, MarketMakerParams, MarketMakerStrategy,
-    OrderWithStrategy, Signal, SignalIntent, Strategy, StrategyFill,
+    OrderAck, OrderWithStrategy, Signal, SignalIntent, Strategy, StrategyFill,
 };

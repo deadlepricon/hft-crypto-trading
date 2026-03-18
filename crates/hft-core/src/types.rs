@@ -26,6 +26,8 @@ pub enum OrderSide {
 pub enum OrderType {
     Limit,
     Market,
+    /// Cancel a resting order. The order_id to cancel is in client_order_id; price holds the original quote price.
+    Cancel,
 }
 
 /// Order status in the execution lifecycle.
@@ -66,6 +68,11 @@ pub struct OrderRequest {
     pub time_in_force: Option<TimeInForce>,
     /// Optional client-assigned id (e.g. strategy_id) echoed back in fill messages.
     pub client_order_id: Option<String>,
+    /// For Cancel orders only: reason the strategy decided to cancel (e.g. "DRIFT", "INVENTORY", "LOSS").
+    pub cancel_reason: Option<String>,
+    /// For Cancel orders only: mid price at the moment the strategy evaluated the cancel.
+    /// Used by the execution engine so price_at_cancel reflects strategy time, not processing time.
+    pub cancel_eval_mid: Option<Price>,
 }
 
 /// Time-in-force for limit orders.

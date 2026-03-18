@@ -9,9 +9,11 @@ use crate::app::PositionLine;
 pub fn positions_widget(positions: &[PositionLine]) -> Paragraph<'static> {
     let mut lines: Vec<Line> = vec![Line::from("  Symbol    Qty   Entry     Unrealized PnL")];
     for p in positions.iter().take(10) {
+        // Truncate qty to 12 chars so an overflow value never wraps the panel layout.
+        let qty_display = if p.qty.len() > 12 { "OVERFLOW".to_string() } else { p.qty.clone() };
         lines.push(Line::from(format!(
-            "  {:>8}  {:>8}  {:>10}  {}",
-            p.symbol, p.qty, p.entry_price, p.unrealized_pnl
+            "  {:>8}  {:>12}  {:>10}  {}",
+            p.symbol, qty_display, p.entry_price, p.unrealized_pnl
         )));
     }
     if positions.is_empty() {

@@ -122,7 +122,7 @@ impl ExchangeConnector for SimulatorConnector {
     async fn subscribe(&self) -> Result<mpsc::UnboundedReceiver<ExchangeMessage>> {
         let (tx, rx) = mpsc::unbounded_channel();
         let ws_url = self.ws_url.clone();
-        let _symbol = self.symbol.clone();
+        let symbol = self.symbol.clone();
 
         let _ = tx.send(ExchangeMessage::Connected);
 
@@ -140,6 +140,9 @@ impl ExchangeConnector for SimulatorConnector {
                                         if let Some(data) = env.data {
                                             if channel == "book" && (msg_type == "delta" || msg_type == "snapshot" || msg_type == "update") {
                                                 if let Ok(d) = serde_json::from_value::<BookDeltaData>(data) {
+                                                    if d.symbol != symbol {
+                                                        continue; // ignore data for other symbols
+                                                    }
                                                     let bids: Vec<Level> = d
                                                         .bids
                                                         .into_iter()
@@ -187,11 +190,15 @@ impl ExchangeConnector for SimulatorConnector {
                                                         continue;
                                                     }
                                                 };
-                                                let symbol = data_obj
+                                                let trade_symbol = data_obj
                                                     .get("symbol")
                                                     .and_then(|v| v.as_str())
                                                     .unwrap_or("")
                                                     .to_string();
+                                                // Ignore trades for other symbols.
+                                                if trade_symbol != symbol {
+                                                    continue;
+                                                }
                                                 let trade_id = data_obj
                                                     .get("trade_id")
                                                     .map(|v| match v {
@@ -217,7 +224,7 @@ impl ExchangeConnector for SimulatorConnector {
                                                 } else {
                                                     OrderSide::Sell
                                                 };
-                                                if symbol.is_empty() || trade_id.is_empty() {
+                                                if trade_symbol.is_empty() || trade_id.is_empty() {
                                                     let snippet = format!(
                                                         "trade? keys={}",
                                                         data_obj.keys().cloned().collect::<Vec<_>>().join(",")
@@ -227,7 +234,7 @@ impl ExchangeConnector for SimulatorConnector {
                                                     let timestamp = data_obj.get("timestamp").cloned();
                                                     let ts = parse_timestamp_ms(&timestamp).unwrap_or_else(Utc::now);
                                                     let ev = TradeEvent {
-                                                        symbol,
+                                                        symbol: trade_symbol,
                                                         trade_id: TradeId(trade_id),
                                                         price: f64_to_decimal(price),
                                                         qty: f64_to_decimal(quantity),
@@ -254,6 +261,10 @@ impl ExchangeConnector for SimulatorConnector {
                                                     timestamp: Option<serde_json::Value>,
                                                 }
                                                 if let Ok(d) = serde_json::from_value::<FillData>(data) {
+                                                    // Ignore fills for other symbols.
+                                                    if d.symbol != symbol {
+                                                        continue;
+                                                    }
                                                     let side = if d.side.to_lowercase().as_str() == "buy" {
                                                         OrderSide::Buy
                                                     } else {
@@ -318,9 +329,22 @@ impl ExchangeConnector for SimulatorConnector {
         let order_type = match request.order_type {
             OrderType::Limit => "limit",
             OrderType::Market => "market",
+            OrderType::Cancel => return Err(hft_core::HftError::InvalidState(
+                "Cancel orders must be sent via cancel_order, not submit_order".to_string(),
+            )),
         };
         let quantity: f64 = request.qty.to_string().parse().unwrap_or(0.0);
         let price = request.price.map(|p| p.to_string().parse::<f64>().unwrap_or(0.0));
+
+        // Send time_in_force so the simulator treats limit orders as GTC resting orders,
+        // not as immediate/taker fills. Without this field some simulators default to
+        // IOC or aggressive matching, which causes limit orders to fill at market price.
+        let tif = match request.time_in_force {
+            Some(hft_core::TimeInForce::GTC) => "GTC",
+            Some(hft_core::TimeInForce::IOC) => "IOC",
+            Some(hft_core::TimeInForce::FOK) => "FOK",
+            None => if matches!(request.order_type, OrderType::Limit) { "GTC" } else { "GTC" },
+        };
 
         let body = serde_json::json!({
             "symbol": request.symbol,
@@ -328,6 +352,7 @@ impl ExchangeConnector for SimulatorConnector {
             "order_type": order_type,
             "quantity": quantity,
             "price": price,
+            "time_in_force": tif,
             "client_order_id": request.client_order_id
         });
 

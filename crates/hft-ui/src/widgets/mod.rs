@@ -1,5 +1,6 @@
 //! TUI widgets: order book, trades, positions, PnL, latency, logs, price feed.
 
+mod cancels;
 mod order_book;
 mod trades;
 mod positions;
@@ -8,6 +9,7 @@ mod logs;
 mod price_feed;
 mod strategy_comparison;
 
+pub use cancels::cancels_widget;
 pub use order_book::order_book_widget;
 pub use trades::trades_widget;
 pub use positions::positions_widget;

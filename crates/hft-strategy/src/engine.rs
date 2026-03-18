@@ -11,7 +11,15 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tracing::debug;
 
-use crate::strategies::{Signal, Strategy, StrategyFill};
+use crate::strategies::{OrderAck, Signal, Strategy, StrategyFill};
+
+/// Helper: receive from an optional UnboundedReceiver; pending forever if None.
+async fn recv_opt<T>(rx: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
+    match rx.as_mut() {
+        Some(r) => r.recv().await,
+        None => std::future::pending().await,
+    }
+}
 
 /// Engine that runs multiple strategies and forwards their signals.
 pub struct StrategyEngine {
@@ -33,43 +41,18 @@ impl StrategyEngine {
         self.strategies.push(strategy);
     }
 
-    /// Run the engine: receive feed events and (optionally) fills; dispatch to strategies.
+    /// Run the engine: receive feed events, fills, and acks; dispatch to strategies.
     /// If `fill_rx` is provided, fills are routed to the strategy matching `fill.strategy_id`.
+    /// If `ack_rx` is provided, acks are routed to the strategy matching `ack.strategy_id`.
     pub async fn run(
         &self,
         mut feed_rx: broadcast::Receiver<EventEnvelope<FeedEvent>>,
         mut fill_rx: Option<mpsc::UnboundedReceiver<StrategyFill>>,
+        mut ack_rx: Option<mpsc::UnboundedReceiver<OrderAck>>,
     ) {
-        if let Some(ref mut rx) = fill_rx {
-            loop {
-                tokio::select! {
-                    res = feed_rx.recv() => match res {
-                        Ok(envelope) => {
-                            for s in &self.strategies {
-                                s.on_feed_event(&envelope.payload, &self.signal_tx);
-                            }
-                        }
-                        Err(broadcast::error::RecvError::Lagged(n)) => {
-                            debug!(lagged = n, "strategy engine lagged");
-                        }
-                        Err(broadcast::error::RecvError::Closed) => break,
-                    },
-                    fill = rx.recv() => match fill {
-                        Some(f) => {
-                            for s in &self.strategies {
-                                if s.name() == f.strategy_id {
-                                    s.on_fill(&f);
-                                    break;
-                                }
-                            }
-                        }
-                        None => break,
-                    },
-                }
-            }
-        } else {
-            loop {
-                match feed_rx.recv().await {
+        loop {
+            tokio::select! {
+                res = feed_rx.recv() => match res {
                     Ok(envelope) => {
                         for s in &self.strategies {
                             s.on_feed_event(&envelope.payload, &self.signal_tx);
@@ -79,7 +62,29 @@ impl StrategyEngine {
                         debug!(lagged = n, "strategy engine lagged");
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
-                }
+                },
+                fill = recv_opt(&mut fill_rx) => match fill {
+                    Some(f) => {
+                        for s in &self.strategies {
+                            if s.name() == f.strategy_id {
+                                s.on_fill(&f);
+                                break;
+                            }
+                        }
+                    }
+                    None => break,
+                },
+                ack = recv_opt(&mut ack_rx) => {
+                    if let Some(a) = ack {
+                        for s in &self.strategies {
+                            if s.name() == a.strategy_id {
+                                s.on_order_ack(&a);
+                                break;
+                            }
+                        }
+                    }
+                    // ack_rx closing is non-fatal: continue running
+                },
             }
         }
     }

@@ -26,6 +26,8 @@ pub struct Metrics {
     pub latency_feed_us: AtomicU64,
     /// Cumulative number of broadcast messages dropped because a subscriber lagged.
     pub feed_events_lagged: AtomicU64,
+    /// Number of stale orders cancelled.
+    pub cancels: AtomicU64,
 }
 
 impl Metrics {
@@ -87,5 +89,13 @@ impl Metrics {
 
     pub fn fills(&self) -> u64 {
         self.fills.load(Ordering::Relaxed)
+    }
+
+    pub fn inc_cancels(&self) {
+        self.cancels.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn cancels(&self) -> u64 {
+        self.cancels.load(Ordering::Relaxed)
     }
 }

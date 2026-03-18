@@ -65,6 +65,20 @@ impl RiskManager {
     /// Process a signal: validate and either forward to execution or reject.
     pub async fn check_signal(&self, signal: Signal) -> Result<()> {
         let req = &signal.request;
+
+        // Cancel signals bypass position validation — they reduce open risk, not increase it.
+        if matches!(req.order_type, hft_core::OrderType::Cancel) {
+            debug!(symbol = %req.symbol, "risk: cancel approved (bypass)");
+            self.approved_tx
+                .send(OrderWithStrategy {
+                    request: req.clone(),
+                    strategy_id: signal.strategy_id.clone(),
+                })
+                .await
+                .map_err(|e| hft_core::HftError::InvalidState(e.to_string()))?;
+            return Ok(());
+        }
+
         let current = self.positions.read().get(req.symbol.as_str()).copied().unwrap_or(0.0);
         // Parse as f64 so fractional quantities like 0.001 BTC are handled correctly.
         let qty_f: f64 = req.qty.to_string().parse().unwrap_or(0.0);

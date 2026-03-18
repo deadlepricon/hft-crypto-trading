@@ -23,6 +23,12 @@ pub fn pnl_latency_widget(app: &App, metrics: &Metrics) -> Paragraph<'static> {
     let sell_win_pct = app.sell_win_rate() * 100.0;
     let total_trades = app.wins + app.losses;
     let live_pnl = app.cumulative_pnl + app.unrealized_pnl;
+    let net_fill_rate = app.net_fill_rate() * 100.0;
+    let cancel_rate = if app.total_fills + app.total_cancels > 0 {
+        app.total_cancels as f64 / (app.total_fills + app.total_cancels) as f64 * 100.0
+    } else {
+        0.0
+    };
     let lines = vec![
         Line::from(Span::styled(
             " PnL & Performance\n",
@@ -49,15 +55,25 @@ pub fn pnl_latency_widget(app: &App, metrics: &Metrics) -> Paragraph<'static> {
         Line::from(format!("  Profit per minute: {}", fmt_pnl(app.profit_per_minute()))),
         Line::from(""),
         Line::from(format!(
-            "  Market trades:    {}  (feed)   Our fills: {}  (our orders filled)",
+            "  Market trades (feed): {}   Our fills: {}  (our orders filled)",
             metrics.trades_received(),
             metrics.fills()
         )),
         Line::from(format!(
-            "  Feed latency:      {} µs",
-            metrics.latency_feed_us()
+            "  Net fill rate:     {:.1}%  (fills / fills+cancels)   Cancel rate: {:.1}%",
+            net_fill_rate,
+            cancel_rate,
         )),
-        Line::from(format!("  Feed messages:     {}", metrics.feed_messages())),
+        Line::from(format!(
+            "  Total Cancels:     {}  ({:.1}/min)   [DRIFT / INVENTORY / LOSS]",
+            app.total_cancels,
+            app.cancels_per_minute()
+        )),
+        Line::from(format!(
+            "  Feed latency:      {} µs   Feed messages: {}",
+            metrics.latency_feed_us(),
+            metrics.feed_messages()
+        )),
     ];
     Paragraph::new(lines)
         .block(Block::default().title(" PnL & Performance ").borders(Borders::ALL))
